@@ -1,0 +1,14 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Namespace — gu-dev
+#
+# Label kubernetes.io/metadata.name is required for the shared-gateway's
+# allowedRoutes.namespaces.selector to match this namespace.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gu-dev
+  labels:
+    app.kubernetes.io/name: gateway-utility
+    environment: dev
+    kubernetes.io/metadata.name: gu-dev   # must match Gateway listener selector

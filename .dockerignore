@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .dockerignore — Gateway Utility
+#
+# Applies to the temp build context created by Package.sh.
+# All paths are relative to the build context root, where app source
+# lands under app/ and graphman client lands under graphman-client-src/.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Infrastructure & tooling (no place in a runtime image) ────────────────────
+app/k8s
+app/scripts
+
+# ── Source files (only the compiled dist/ output goes in the image) ────────────
+app/src
+app/public
+app/index.html
+app/tsconfig.json
+app/tsconfig.node.json
+app/vite.config.ts
+
+# ── Package manifests (node_modules are pre-installed by Package.sh) ──────────
+app/package.json
+app/package-lock.json
+
+# ── Shell scripts ──────────────────────────────────────────────────────────────
+app/*.sh
+
+# ── Runtime-mounted configs (injected via ConfigMap / Secret at runtime) ───────
+app/auth-config.json
+app/config.json
+
+# ── Runtime data directories (recreated fresh by the app on startup) ──────────
+app/response
+app/generated
+app/Sample
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+app/*.md
+
+# ── Dev/build cache inside node_modules (not needed at runtime) ───────────────
+app/node_modules/.vite
+app/node_modules/@types
+app/node_modules/.cache
+
+# ── Version control ───────────────────────────────────────────────────────────
+app/.git
+app/.gitignore
+**/.git
+**/.gitignore
+
+# ── graphman-client: credentials NEVER baked into the image ───────────────────
+graphman-client-src/graphman.configuration
+graphman-client/graphman.configuration
+
+# ── graphman-client: non-runtime assets (tests, docs, samples) ────────────────
+graphman-client/tests
+graphman-client/postman
+graphman-client/img
+graphman-client/configAsCode
+graphman-client/Jenkinsfile
+graphman-client/README.md
+graphman-client/LICENSE.md
+graphman-client/build.sh
+graphman-client/graphman.bat
+graphman-client/samples
+graphman-client/.git
+graphman-client/.gitignore
+
+# ── OS / editor artefacts ─────────────────────────────────────────────────────
+**/.DS_Store
+**/Thumbs.db
+**/*.log
+**/*.swp
+**/.env
+**/.env.*

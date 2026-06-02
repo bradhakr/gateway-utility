@@ -1,0 +1,11 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Namespace — gu-prod
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gu-prod
+  labels:
+    app.kubernetes.io/name: gateway-utility
+    environment: prod
+    kubernetes.io/metadata.name: gu-prod   # must match Gateway listener selector

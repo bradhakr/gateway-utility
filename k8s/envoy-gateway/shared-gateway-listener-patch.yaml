@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# shared-gateway — actual configuration reference
+#
+# The shared-gateway in the default namespace already has ONE wildcard listener:
+#
+#   name:     https
+#   protocol: HTTPS
+#   port:     443
+#   hostname: *.vks.security.broadcom.com
+#
+# This wildcard listener covers ALL subdomains, including:
+#   gu-dev.vks.security.broadcom.com
+#   gu-prod.vks.security.broadcom.com
+#
+# The wildcard TLS cert (wildcard.vks.security.broadcom.com-tls) already
+# covers both hostnames — no per-hostname listener is needed.
+#
+# allowedRoutes on the 'https' listener already includes gu-dev and gu-prod
+# via a Selector matchExpression (confirmed active):
+#   key: kubernetes.io/metadata.name
+#   operator: In
+#   values: [monitoring, influxdb, redis, ssp, app, gu-dev, gu-prod]
+#
+# ── What you DO NOT need to do ───────────────────────────────────────────────
+# • Do NOT add new listeners (gu-dev-https / gu-prod-https) to shared-gateway
+# • Do NOT modify the existing 'https' listener
+# • Do NOT modify allowedRoutes (gu-dev and gu-prod are already allowed)
+#
+# ── What the HTTPRoutes do ───────────────────────────────────────────────────
+# Both gu-dev-httproute.yaml and gu-prod-httproute.yaml reference:
+#   parentRefs:
+#     - name: shared-gateway
+#       namespace: default
+#       sectionName: https        ← matches the single wildcard listener
+#
+# Envoy routes by matching:
+#   Listener:   *.vks.security.broadcom.com  (wildcard)
+#   HTTPRoute:  gu-dev.vks.security.broadcom.com  → gu-dev Service
+#   HTTPRoute:  gu-prod.vks.security.broadcom.com → gu-prod Service
+#
+# ── If you ever need to inspect the live listener ────────────────────────────
+# kubectl get gateway shared-gateway -n default \
+#   -o jsonpath='{range .spec.listeners[*]}{.name}{"\t"}{.hostname}{"\t"}{.protocol}{"\n"}{end}'
+# ─────────────────────────────────────────────────────────────────────────────

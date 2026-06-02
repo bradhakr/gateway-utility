@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress — Gateway Utility (optional)
+#
+# Exposes the service externally via an Ingress controller (e.g. nginx-ingress).
+# Replace REPLACE_ME_HOSTNAME with your actual hostname.
+#
+# TLS: uncomment the tls section and create a certificate Secret, or use
+# cert-manager to auto-provision Let's Encrypt certificates.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway-utility
+  namespace: gateway-utility
+  labels:
+    app.kubernetes.io/name: gateway-utility
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-body-size: "20m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: REPLACE_ME_HOSTNAME      # e.g. gateway-utility.yourdomain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway-utility
+                port:
+                  name: http
+
+  # ── TLS (uncomment to enable HTTPS) ─────────────────────────────────────────
+  # tls:
+  #   - hosts:
+  #       - REPLACE_ME_HOSTNAME
+  #     secretName: gateway-utility-tls

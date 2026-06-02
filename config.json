@@ -1,0 +1,9 @@
+{
+  "graphmanHome": "../../graphman-client-main",
+  "sourceGateway": "vks",
+  "targetGateway": "vks",
+  "assertionType": "EvaluateJsonPathExpressionV2",
+  "exportSchema": "v11.2.1",
+  "importSchema": "v11.2.1",
+  "loginUrl": "https://ssggw.vks.security.broadcom.com/rest/gu/login"
+}

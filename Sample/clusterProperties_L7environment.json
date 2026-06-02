@@ -1,0 +1,12 @@
+{
+  "clusterProperties": [
+
+    {
+      "goid": "503b622599ffc76fcb8cb98b7251eb95",
+      "name": "GU-environment",
+      "description": "Stores the Graphman Utility environment",
+      "hiddenProperty": false,
+      "value": "Development"
+    }
+  ]
+}

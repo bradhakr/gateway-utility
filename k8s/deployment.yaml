@@ -1,0 +1,149 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment — Gateway Utility
+#
+# response/ and generated/ are emptyDir volumes — ephemeral scratch space that
+# is local to each pod and cleared on restart.  The Service uses
+# sessionAffinity: ClientIP so all requests from the same browser session are
+# always routed to the same pod, which means each pod's scratch files are
+# consistently reachable without a shared PVC.
+#
+# Scale replicas freely — sticky sessions handle the rest.
+# server.js automatically purges files older than 24 h from both dirs.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-utility
+  labels:
+    app.kubernetes.io/name: gateway-utility
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 1   # scale up freely — sessionAffinity: ClientIP on the Service handles pod affinity
+  selector:
+    matchLabels:
+      app: gateway-utility
+  template:
+    metadata:
+      labels:
+        app: gateway-utility
+        app.kubernetes.io/name: gateway-utility
+    spec:
+      # ── Security context ─────────────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+
+      containers:
+        - name: gateway-utility
+          image: docker.io/bradhakr/gateway-utility:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3002
+              protocol: TCP
+
+          # ── Environment ────────────────────────────────────────────────────
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: GRAPHMAN_HOME
+              value: /app/graphman-client
+            # Session secret — override with a strong random value in production.
+            # Generate with: openssl rand -hex 32
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-utility-session
+                  key: session-secret
+                  optional: true   # Falls back to dev default if secret absent
+
+          # ── Volume mounts ──────────────────────────────────────────────────
+          volumeMounts:
+            # config.json from ConfigMap — mounted as a single file
+            - name: config-json
+              mountPath: /app/config.json
+              subPath: config.json
+              readOnly: true
+
+            # auth-config.json from ConfigMap — gateway & OIDC endpoints
+            - name: config-json
+              mountPath: /app/auth-config.json
+              subPath: auth-config.json
+              readOnly: true
+
+            # graphman.configuration from Secret — mounted as a single file
+            - name: graphman-config
+              mountPath: /app/graphman-client/graphman.configuration
+              subPath: graphman.configuration
+              readOnly: true
+
+            # Writable scratch directories for temporary export/import files
+            - name: response-dir
+              mountPath: /app/response
+
+            - name: generated-dir
+              mountPath: /app/generated
+
+          # ── Health probes ──────────────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3002
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3002
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # ── Resource limits ────────────────────────────────────────────────
+          # Graphman export/import operations are CPU-light but memory-heavy
+          # for large bundles. Adjust based on your gateway size.
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "768Mi"
+              cpu: "500m"
+
+          # ── Security context (container) ────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # server.js writes to response/ and generated/
+            capabilities:
+              drop:
+                - ALL
+
+      # ── Volumes ─────────────────────────────────────────────────────────────
+      volumes:
+        - name: config-json
+          configMap:
+            name: gateway-utility-config
+
+        - name: graphman-config
+          secret:
+            secretName: gateway-utility-graphman
+
+        # Ephemeral scratch space — cleared on pod restart.
+        # server.js also purges files older than 24 h automatically.
+        # No PVC needed: sessionAffinity: ClientIP on the Service ensures
+        # each browser session always lands on the same pod.
+        - name: response-dir
+          emptyDir: {}
+
+        - name: generated-dir
+          emptyDir: {}
+
+      # ── Pull secret ─────────────────────────────────────────────────────────
+      imagePullSecrets:
+        - name: private-registry-secret

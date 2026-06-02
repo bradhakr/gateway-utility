@@ -1,0 +1,50 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ConfigMap — config.json + auth-config.json
+#
+# Contains application configuration (no secrets/passwords).
+# config.json      → mounted at /app/config.json
+# auth-config.json → mounted at /app/auth-config.json
+#
+# IMPORTANT: graphmanHome MUST be "graphman-client" (relative to /app)
+#            because that is where the image places the graphman client.
+#
+# auth-config.json holds Gateway login endpoints and OIDC / IDSP settings.
+# If clientSecret is required for introspection, move it to a Secret and
+# override the auth-config.json mount accordingly.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-utility-config
+  labels:
+    app.kubernetes.io/name: gateway-utility
+    app.kubernetes.io/component: config
+data:
+  config.json: |
+    {
+      "graphmanHome": "graphman-client",
+      "sourceGateway": "source",
+      "targetGateway": "target",
+      "assertionType": "EvaluateJsonPathExpressionV2",
+      "exportSchema": "v11.2.1",
+      "importSchema": "v11.2.1"
+    }
+
+  auth-config.json: |
+    {
+      "gateway": {
+        "host":      "https://ssggw.vks.security.broadcom.com",
+        "loginUrl":  "https://ssggw.vks.security.broadcom.com/rest/gu/login",
+        "logoffUrl": "https://ssggw.vks.security.broadcom.com/rest/gu/logoff"
+      },
+      "oidc": {
+        "discoveryUrl":                 "https://your-idsp-host/default/.well-known/openid-configuration",
+        "clientId":                     "your-oidc-client-id",
+        "clientSecret":                 "",
+        "redirectUri":                  "https://your-app-fqdn/auth/callback",
+        "postLogoutRedirectUri":        "https://your-app-fqdn/login",
+        "scopes":                       "openid profile email",
+        "sessionMaxAgeSeconds":         3600,
+        "introspectionIntervalSeconds": 300
+      }
+    }

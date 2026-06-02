@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ReferenceGrant — gu-prod
+#
+# Grants the shared-gateway (in the default namespace) permission to:
+#   1. Route traffic to the gateway-utility Service in gu-prod
+#   2. Read the TLS cert Secret in gu-prod (Option B only)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-shared-gateway
+  namespace: gu-prod
+  labels:
+    app.kubernetes.io/name: gateway-utility
+    environment: prod
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: default
+
+  to:
+    # Allow routing to any Service in gu-prod
+    - group: ""
+      kind: Service
+
+    # Allow reading the TLS cert Secret in gu-prod (Option B only)
+    - group: ""
+      kind: Secret

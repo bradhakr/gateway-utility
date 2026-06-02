@@ -1,0 +1,17 @@
+{
+  "gateway": {
+    "host": "https://ssggw.vks.security.broadcom.com/",
+    "loginUrl": "https://ssggw.vks.security.broadcom.com/rest/gu/login",
+    "logoffUrl": "https://ssggw.vks.security.broadcom.com/rest/gu/logoff"
+  },
+  "oidc": {
+    "discoveryUrl": "https://<your-idsp-host>/default/.well-known/openid-configuration",
+    "clientId": "<your-client-id>",
+    "clientSecret": "",
+    "redirectUri": "http://localhost:5173/auth/callback",
+    "postLogoutRedirectUri": "http://localhost:5173/login",
+    "scopes": "openid profile email",
+    "sessionMaxAgeSeconds": 3600,
+    "introspectionIntervalSeconds": 300
+  }
+}

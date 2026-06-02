@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Service — Gateway Utility
+#
+# ClusterIP (default): accessible only within the cluster.
+# Change type to NodePort or LoadBalancer for external access,
+# or add an Ingress (see ingress.yaml) and keep this as ClusterIP.
+#
+# sessionAffinity: ClientIP pins each client to the same pod for the duration
+# of sessionAffinityConfig.clientIP.timeoutSeconds (default 10800 = 3 h).
+# This ensures that the named scratch files written by one API call
+# (e.g. spFolderSVCFull.json from /api/export-all) are readable by the
+# subsequent calls from the same browser session — without needing a PVC.
+# Safe to scale replicas above 1 with this setting in place.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-utility
+  namespace: gateway-utility
+  labels:
+    app.kubernetes.io/name: gateway-utility
+    app.kubernetes.io/component: service
+spec:
+  type: ClusterIP
+  selector:
+    app: gateway-utility
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800   # 3 hours — matches a typical working session
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 3002

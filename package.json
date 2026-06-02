@@ -1,0 +1,32 @@
+{
+  "name": "gateway-utility",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"vite\"",
+    "server": "nodemon --watch server.js server.js",
+    "build": "./node_modules/.bin/tsc && ./node_modules/.bin/vite build",
+    "preview": "vite preview",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "express-session": "^1.19.0",
+    "jose": "^6.2.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.22.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express-session": "^1.19.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.14",
+    "typescript": "^5.3.3",
+    "vite": "^5.1.0"
+  }
+}

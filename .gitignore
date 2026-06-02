@@ -1,0 +1,47 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .gitignore — Gateway Utility
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Build output (regenerated with: npm run build) ────────────────────────────
+dist/
+
+# ── Runtime data directories (created fresh by the app on startup) ────────────
+response/
+generated/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECRETS — NEVER COMMIT THESE
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Gateway credentials (usernames, passwords, addresses)
+# Use k8s/secret.yaml.template — fill in values locally, apply with kubectl
+k8s/secret.yaml
+
+# Docker Hub registry pull secret (contains base64-encoded PAT)
+# Use k8s/docker-registry-secret.yaml.template to regenerate
+k8s/docker-registry-secret.yaml
+
+# graphman configuration files (contain gateway credentials)
+graphman.configuration
+*.configuration
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Vendor package downloads (regenerated with: ./scripts/download-vendor.sh) ─
+scripts/vendor/*.tgz
+scripts/vendor/manifest.json
+
+# ── Script-generated reports ──────────────────────────────────────────────────
+scripts/validation-report.txt
+
+# ── OS / editor artefacts ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+*.swo
+.env
+.env.*

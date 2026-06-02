@@ -1,0 +1,20 @@
+{
+  "trustedCerts": [
+    {
+      "goid": "2cb3921d99d178d35f7b2b47a033ca81",
+      "name": "Balaji.Radhakrishnan",
+      "subjectDn": "1.2.840.113549.1.9.1=balaji.radhakrishnan@broadconm.com,cn=balaji.radhakrishnan,ou=ims,o=broadcom inc,l=suwanee,st=georgia,c=us",
+      "thumbprintSha1": "jA9ZzPKE9uUBKkzFv6h+864Qqwg=",
+      "checksum": "e27ae2f2bfa5c018048a4de0fa8d735b9f568bf2",
+      "verifyHostname": false,
+      "trustAnchor": true,
+      "trustedFor": [
+        "SSL"
+      ],
+      "revocationCheckPolicyType": "USE_DEFAULT",
+      "notBefore": "2026-05-28T02:50:02.000Z",
+      "notAfter": "2027-05-28T02:50:02.000Z",
+      "certBase64": "MIIEMzCCAxugAwIBAgIUEfaIQdynme4W4iUOqmPyOVikadEwDQYJKoZIhvcNAQELBQAwgagxCzAJ\r\nBgNVBAYTAlVTMRAwDgYDVQQIDAdHZW9yZ2lhMRAwDgYDVQQHDAdTdXdhbmVlMRUwEwYDVQQKDAxC\r\ncm9hZGNvbSBJTmMxDDAKBgNVBAsMA0lNUzEdMBsGA1UEAwwUQmFsYWppLlJhZGhha3Jpc2huYW4x\r\nMTAvBgkqhkiG9w0BCQEWImJhbGFqaS5yYWRoYWtyaXNobmFuQGJyb2FkY29ubS5jb20wHhcNMjYw\r\nNTI4MDI1MDAyWhcNMjcwNTI4MDI1MDAyWjCBqDELMAkGA1UEBhMCVVMxEDAOBgNVBAgMB0dlb3Jn\r\naWExEDAOBgNVBAcMB1N1d2FuZWUxFTATBgNVBAoMDEJyb2FkY29tIElOYzEMMAoGA1UECwwDSU1T\r\nMR0wGwYDVQQDDBRCYWxhamkuUmFkaGFrcmlzaG5hbjExMC8GCSqGSIb3DQEJARYiYmFsYWppLnJh\r\nZGhha3Jpc2huYW5AYnJvYWRjb25tLmNvbTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB\r\nALV80YbV9H5unMtyz9+QjuBisK9VMgKkceX4psaMsmt44/QGM/ROIsQHe403aVF9PDn+j3JIrbRo\r\nvPubH4mowQb4PybxD2qSxmluUfzfN4sDJ24ZtExg0kDezM71LmeWlwMRtoEx+775FYMVcz4TqVLt\r\nGFZQnZ9XuL3+wlWTovvQN0bCtRMIeSq52MBRI9HxGCM7tDfrNEbNzT2OxP5K7MPQmdVHp79niXcQ\r\nekNAcLiHOowXUFqa0gYK/TfusOHw469HrauYP5ZjU2jFvnIjoX3hEW1r2D3MIgIbEGDKXyKkaRg6\r\nt8VwIad8OxBLkuh7xJHWNuZpbwoOVooqx2E9TgcCAwEAAaNTMFEwHQYDVR0OBBYEFIPCGzCA8he9\r\nFjcdVw/bzKmXMGH2MB8GA1UdIwQYMBaAFIPCGzCA8he9FjcdVw/bzKmXMGH2MA8GA1UdEwEB/wQF\r\nMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAC3URvEUn6Y7jpPJR1Z1ZIz9x0szvL4T4RYzf+ACADYf\r\nAc7HHnv2mBEEdH2IV1Q5olfgZM42zN84tlyfuVNK2zRGLKSdDBDyZSkMq8f1dU6HFojWu6rx9quf\r\nxOwtdAJ28z9+iSMPpgRg/tCNj5ltVaxCM/Bm++jozBQXqIR+i4JYwS4WfN1VEkqkkjTHZkzjaL8B\r\n16ndm/vNcrkLJtj3GEuqdSd6XrsOQWjdZY+1BFskZdnFavfWen7SaSBuzZoLdQVlVc2VHxblZf9L\r\ne2WKg/6BnRBEIQ4KxxW5EDMozQ63oAVy/r/9gsygINRFJjYUoKK/LK+89sHWj1ZbSXrJs3U="
+    }
+  ]
+}
