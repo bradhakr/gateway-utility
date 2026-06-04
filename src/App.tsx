@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import type { ReactNode } from 'react'
 import Layout from './components/Layout'
@@ -74,12 +74,19 @@ function AppRoutes() {
   )
 }
 
-export default function App() {
-  return (
-    <BrowserRouter>
+// createBrowserRouter enables useBlocker (navigation guard) on all pages.
+// AppRoutes still uses <Routes>/<Route> internally — both APIs are compatible.
+const router = createBrowserRouter([
+  {
+    path: '*',
+    element: (
       <AuthProvider>
         <AppRoutes />
       </AuthProvider>
-    </BrowserRouter>
-  )
+    ),
+  },
+])
+
+export default function App() {
+  return <RouterProvider router={router} />
 }

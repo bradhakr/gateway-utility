@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useDirtyGuard } from '../hooks/useDirtyGuard'
+import { NavigationBlocker } from '../components/NavigationBlocker'
 
 interface Config {
   graphmanHome:   string
@@ -70,7 +72,8 @@ export default function Configuration() {
       .finally(() => setSchemasLoading(false))
   }, [config.graphmanHome])
 
-  const isDirty = original !== null && JSON.stringify(config) !== JSON.stringify(original)
+  const isDirty   = original !== null && JSON.stringify(config) !== JSON.stringify(original)
+  const navBlocker = useDirtyGuard(isDirty)
 
   function handleChange(key: keyof Config, value: string) {
     setConfig(prev => ({ ...prev, [key]: value }))
@@ -119,6 +122,9 @@ export default function Configuration() {
   }
 
   return (
+    <>
+    <NavigationBlocker blocker={navBlocker}
+      description="You have unsaved configuration changes. Leaving this page will discard them." />
     <div style={{ padding: '28px 32px', maxWidth: '780px' }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
@@ -269,6 +275,7 @@ export default function Configuration() {
         </button>
       </div>
     </div>
+    </>
   )
 }
 

@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useDirtyGuard } from '../hooks/useDirtyGuard'
+import { NavigationBlocker } from '../components/NavigationBlocker'
 import type { ReactNode } from 'react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -221,7 +223,8 @@ export default function GraphmanConfig() {
   }, [])
 
   const selected = gateways.find(g => g._key === selectedKey) ?? null
-  const isDirty  = !!originalJson && originalJson !== JSON.stringify({ gateways: gatewaysToApi(gateways), options })
+  const isDirty    = !!originalJson && originalJson !== JSON.stringify({ gateways: gatewaysToApi(gateways), options })
+  const navBlocker = useDirtyGuard(isDirty)
 
   // ─── Gateway mutations ────────────────────────────────────────────────────
 
@@ -309,6 +312,9 @@ export default function GraphmanConfig() {
   const saveBtnDisabled = !isDirty || saving
 
   return (
+    <>
+    <NavigationBlocker blocker={navBlocker}
+      description="You have unsaved gateway configuration changes. Leaving this page will discard them." />
     <div style={{ padding: '20px 24px', maxWidth: '1200px' }}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -568,6 +574,7 @@ export default function GraphmanConfig() {
         </div>
       </div>
     </div>
+    </>
   )
 }
 

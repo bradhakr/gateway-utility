@@ -15,8 +15,9 @@ for PORT in "${PORTS[@]}"; do
   fi
 done
 
-# Also sweep any stray 'node server.js' processes from this project
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Also sweep any stray 'node server.js' processes from this project.
+# PROJECT_DIR resolves one level up from scripts/ to the actual project root.
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_PIDS=$(pgrep -f "node ${PROJECT_DIR}/server.js" 2>/dev/null)
 if [ -n "$NODE_PIDS" ]; then
   echo "  → Killing stray server.js process(es): $NODE_PIDS"

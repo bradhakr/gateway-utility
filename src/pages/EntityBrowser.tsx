@@ -192,7 +192,7 @@ export default function EntityBrowser() {
 
   // ── Step 1: gateway ───────────────────────────────────────────────────────
   const [gwEntries, setGwEntries]             = useState<GatewayEntry[]>([])
-  const [graphmanSchema, setGraphmanSchema]   = useState('v11.1.00')
+  const [graphmanSchema, setGraphmanSchema]   = useState('')
   const [selectedGateway, setSelectedGateway] = useState('')
   const [configError, setConfigError]         = useState('')
   const [gwTestLoading, setGwTestLoading]     = useState(false)
@@ -231,7 +231,8 @@ export default function EntityBrowser() {
           ([name, gw]) => ({ name, ...(gw as Omit<GatewayEntry, 'name'>) })
         )
         setGwEntries(entries)
-        if (d.options?.schema) setGraphmanSchema(d.options.schema)
+        if (!d.options?.schema) throw new Error('options.schema is not set in graphman.configuration. Open App Config and add it.')
+        setGraphmanSchema(d.options.schema)
         if (entries.length > 0) setSelectedGateway(entries[0].name)
       })
       .catch(e => setConfigError(`Could not load configuration: ${e.message}`))
@@ -628,8 +629,8 @@ export default function EntityBrowser() {
             </div>
           </div>
 
-          {/* Right: live preview */}
-          <div style={{ width: '380px', flexShrink: 0, position: 'sticky', top: '20px' }}>
+          {/* Right: live preview — sticky relative to main's scroll container */}
+          <div style={{ width: '380px', flexShrink: 0, position: 'sticky', top: '16px' }}>
             <div style={{ background: 'var(--color-card-bg)', border: `1px solid ${PAGE_RGBA}0.20)`, borderRadius: '10px', overflow: 'hidden' }}>
 
               {/* Preview tabs */}

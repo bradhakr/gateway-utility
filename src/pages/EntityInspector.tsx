@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useDirtyGuard } from '../hooks/useDirtyGuard'
+import { NavigationBlocker } from '../components/NavigationBlocker'
 
 const PAGE_COLOR = '#78350f'
 const PAGE_RGBA  = 'rgba(120,53,15,'
@@ -91,94 +93,308 @@ function fmtDate(iso: string | null | undefined) {
 
 type ViewMode = 'source' | 'target'
 
-// ─── Edit Modal ───────────────────────────────────────────────────────────────
+// ─── Boolean Toggle ────────────────────────────────────────────────────────────
 
-interface EditModalProps {
+function BooleanToggle({ value, disabled, onChange }: { value: boolean; disabled: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => { if (!disabled) onChange(!value) }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: '10px', background: 'transparent', border: 'none', padding: 0, cursor: disabled ? 'default' : 'pointer' }}
+    >
+      <div style={{ width: '42px', height: '24px', borderRadius: '12px', background: value ? '#22c55e' : 'rgba(255,255,255,0.12)', border: `1px solid ${value ? '#16a34a' : 'var(--color-border)'}`, position: 'relative', transition: 'background 0.2s, border-color 0.2s', flexShrink: 0, opacity: disabled ? 0.5 : 1 }}>
+        <div style={{ position: 'absolute', top: '3px', left: value ? '19px' : '3px', width: '16px', height: '16px', borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+      </div>
+      <span style={{ fontSize: '13px', fontWeight: 500, color: disabled ? 'var(--color-text-secondary)' : (value ? '#86efac' : 'var(--color-text-secondary)') }}>
+        {value ? 'true' : 'false'}
+      </span>
+    </button>
+  )
+}
+
+// ─── Entity Form Editor ────────────────────────────────────────────────────────
+
+interface EntityFormEditorProps {
   entityType: string
   item: Record<string, unknown>
   savedEdit?: Record<string, unknown>
-  isReadOnly?: boolean
+  isReadOnly: boolean
   onSave: (parsed: Record<string, unknown>) => void
-  onClose: () => void
+  onBack: () => void
+  onDirtyChange?: (dirty: boolean) => void
 }
-function EditModal({ entityType, item, savedEdit, isReadOnly, onSave, onClose }: EditModalProps) {
-  const initialJson = JSON.stringify(savedEdit ?? item, null, 2)
-  const [jsonText, setJsonText] = useState(initialJson)
-  const [jsonError, setJsonError] = useState('')
-  const [isDirty, setIsDirty] = useState(false)
-  const [copied, setCopied] = useState(false)
 
+function EntityFormEditor({ entityType, item, savedEdit, isReadOnly, onSave, onBack, onDirtyChange }: EntityFormEditorProps) {
   const meta = getMeta(entityType)
   const displayName = getEntityName(item, meta)
 
-  function handleChange(text: string) {
-    setJsonText(text); setIsDirty(text !== initialJson)
-    try { JSON.parse(text); setJsonError('') } catch (e: unknown) { setJsonError((e as Error).message) }
+  const [formState, setFormState] = useState<Record<string, unknown>>({ ...(savedEdit ?? item) })
+  const [complexText, setComplexText] = useState<Record<string, string>>(() => {
+    const out: Record<string, string> = {}
+    Object.entries(savedEdit ?? item).forEach(([k, v]) => {
+      if (v !== null && typeof v === 'object') out[k] = JSON.stringify(v, null, 2)
+    })
+    return out
+  })
+  const [complexErrors, setComplexErrors] = useState<Record<string, string>>({})
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [showAdditional, setShowAdditional] = useState(false)
+  const [isDirty, setIsDirty] = useState(false)
+  const [isSaved, setIsSaved] = useState(!!savedEdit)
+  const [downloaded, setDownloaded] = useState(false)
+
+  const hasErrors = Object.keys(complexErrors).length > 0
+
+  useEffect(() => { onDirtyChange?.(isDirty) }, [isDirty, onDirtyChange])
+
+  const knownKeys  = meta.columns.map(c => c.key)
+  const allKeys    = Object.keys(formState)
+  const primaryKeys    = knownKeys.filter(k => allKeys.includes(k))
+  const additionalKeys = allKeys.filter(k => !knownKeys.includes(k)).sort()
+
+  function setField(key: string, value: unknown) {
+    setFormState(prev => ({ ...prev, [key]: value }))
+    setIsDirty(true)
+    setIsSaved(false)
   }
-  function handleCopy() {
-    navigator.clipboard.writeText(jsonText).then(() => {
-      setCopied(true); setTimeout(() => setCopied(false), 2000)
-    }).catch(() => {})
+
+  function handleComplexChange(key: string, text: string) {
+    setComplexText(prev => ({ ...prev, [key]: text }))
+    try {
+      const parsed = JSON.parse(text)
+      setFormState(prev => ({ ...prev, [key]: parsed }))
+      setComplexErrors(prev => { const n = { ...prev }; delete n[key]; return n })
+      setIsDirty(true)
+      setIsSaved(false)
+    } catch (e: unknown) {
+      setComplexErrors(prev => ({ ...prev, [key]: (e as Error).message.split('\n')[0] }))
+    }
   }
-  function handleDownload() {
-    let parsed: unknown; try { parsed = JSON.parse(jsonText) } catch { parsed = item }
-    const blob = new Blob([JSON.stringify(parsed, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url
-    a.download = `${entityType}_${displayName.replace(/[^a-z0-9]/gi, '_')}.json`
-    a.click(); URL.revokeObjectURL(url)
+
+  function toggleExpand(key: string) {
+    setExpanded(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
   }
+
   function handleSave() {
-    if (jsonError) return
-    try { onSave(JSON.parse(jsonText) as Record<string, unknown>); onClose() }
-    catch { setJsonError('Invalid JSON – fix errors before saving.') }
+    if (hasErrors || isReadOnly) return
+    onSave(formState)
+    setIsDirty(false)
+    setIsSaved(true)
   }
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '10px', display: 'flex', flexDirection: 'column', width: '900px', maxWidth: '96vw', height: '88vh', overflow: 'hidden', boxShadow: '0 24px 64px rgba(0,0,0,0.5)' }}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ background: 'var(--color-accent-red)', color: '#fff', fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px' }}>{entityType}</span>
-              <span style={{ fontSize: '15px', fontWeight: 600, color: 'var(--color-text-primary)' }}>{displayName}</span>
-              {isDirty && <span style={{ fontSize: '11px', color: '#facc15', background: 'rgba(250,204,21,0.12)', border: '1px solid rgba(250,204,21,0.3)', padding: '1px 7px', borderRadius: '4px' }}>Unsaved changes</span>}
-            </div>
-            <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)', marginTop: '4px' }}>
-              {isReadOnly
-                ? <><span style={{ color: '#f59e0b', fontWeight: 600 }}>Read-only (Target snapshot)</span> — <strong>Copy</strong> or <strong>Download</strong> for reference. Editing is disabled.</>
-                : <>Edit JSON below. <strong>Copy</strong> to clipboard. <strong>Save</strong> stages changes. <strong>Download</strong> exports to file.</>}
-            </div>
+
+  function handleDownload() {
+    const safeName = displayName.replace(/[^a-z0-9]/gi, '_')
+    const blob = new Blob([JSON.stringify(formState, null, 2)], { type: 'application/json' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url
+    a.download = `${entityType}_${safeName}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    setDownloaded(true)
+    setTimeout(() => setDownloaded(false), 2000)
+  }
+
+  function getFieldLabel(key: string) {
+    return meta.columns.find(c => c.key === key)?.label ?? humanLabel(key)
+  }
+
+  function renderInput(key: string, value: unknown): React.ReactNode {
+    const disabled = isReadOnly
+    const base: React.CSSProperties = {
+      background: disabled ? 'rgba(255,255,255,0.03)' : 'var(--color-input-bg)',
+      border: '1px solid var(--color-border)',
+      borderRadius: '6px',
+      color: disabled ? 'var(--color-text-secondary)' : 'var(--color-text-primary)',
+      padding: '8px 12px',
+      fontSize: '13px',
+      width: '100%',
+      outline: 'none',
+      boxSizing: 'border-box' as const,
+    }
+
+    if (value === null || value === undefined) {
+      return (
+        <input style={base} value="" placeholder="null" readOnly={disabled}
+          onChange={e => setField(key, e.target.value || null)} />
+      )
+    }
+    if (typeof value === 'boolean') {
+      return <BooleanToggle value={value} disabled={disabled} onChange={v => setField(key, v)} />
+    }
+    if (typeof value === 'number') {
+      return (
+        <input type="number" style={base} value={String(value)} readOnly={disabled}
+          onChange={e => setField(key, e.target.value === '' ? 0 : Number(e.target.value))} />
+      )
+    }
+    if (typeof value === 'string') {
+      const multiline = value.length > 80 || value.includes('\n')
+      return multiline
+        ? <textarea style={{ ...base, resize: 'vertical', minHeight: '80px', lineHeight: '1.5', fontFamily: 'inherit' }}
+            value={value} readOnly={disabled} onChange={e => setField(key, e.target.value)} />
+        : <input style={base} value={value} readOnly={disabled} onChange={e => setField(key, e.target.value)} />
+    }
+
+    // Object or Array
+    const isArr = Array.isArray(value)
+    const isExp = expanded.has(key)
+    const text  = complexText[key] ?? JSON.stringify(value, null, 2)
+    const err   = complexErrors[key]
+    const count = isArr ? (value as unknown[]).length : Object.keys(value as object).length
+
+    return (
+      <div>
+        <button type="button" onClick={() => toggleExpand(key)}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--color-border)', borderRadius: '5px', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '5px 10px', fontSize: '12px', fontFamily: 'monospace' }}>
+          <span style={{ fontSize: '9px' }}>{isExp ? '▼' : '▶'}</span>
+          {isArr ? `[ ${count} item${count !== 1 ? 's' : ''} ]` : `{ ${count} field${count !== 1 ? 's' : ''} }`}
+        </button>
+        {isExp && (
+          <div style={{ marginTop: '6px' }}>
+            <textarea
+              style={{ ...base, resize: 'vertical', minHeight: '120px', fontFamily: 'ui-monospace,"Cascadia Code","Fira Code",monospace', fontSize: '12px', lineHeight: '1.6', background: '#0d1117', color: err ? '#fca5a5' : (disabled ? '#6b7280' : '#c9d1d9') }}
+              value={text} readOnly={disabled}
+              onChange={e => handleComplexChange(key, e.target.value)} />
+            {err && <div style={{ fontSize: '11px', color: '#fca5a5', marginTop: '4px' }}>JSON error: {err}</div>}
           </div>
-          <button onClick={onClose} style={{ background: 'transparent', border: '1px solid var(--color-border)', borderRadius: '6px', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '6px 10px', fontSize: '18px', lineHeight: 1 }}>×</button>
+        )}
+      </div>
+    )
+  }
+
+  function renderField(key: string, value: unknown, isPrimary: boolean) {
+    const isIdField = key === 'goid' || key === 'id'
+    return (
+      <div key={key} style={{ marginBottom: '18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+          <label style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.5px', color: isPrimary ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>
+            {getFieldLabel(key)}
+          </label>
+          {isIdField && (
+            <span style={{ fontSize: '9px', fontWeight: 700, color: '#6b7280', background: 'rgba(107,114,128,0.1)', border: '1px solid rgba(107,114,128,0.2)', padding: '0 5px', borderRadius: '3px', textTransform: 'uppercase' as const, letterSpacing: '0.4px' }}>ID</span>
+          )}
         </div>
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {jsonError && <div style={{ padding: '8px 20px', background: 'rgba(239,68,68,0.12)', borderBottom: '1px solid rgba(239,68,68,0.25)', color: '#fca5a5', fontSize: '12px', flexShrink: 0 }}>JSON error: {jsonError}</div>}
-          <textarea
-            value={jsonText}
-            onChange={e => { if (!isReadOnly) handleChange(e.target.value) }}
-            readOnly={isReadOnly}
-            spellCheck={false}
-            style={{ flex: 1, resize: 'none', background: '#0d1117', color: isReadOnly ? '#8b949e' : '#c9d1d9', border: 'none', outline: 'none', fontFamily: 'ui-monospace,"Cascadia Code","Fira Code",monospace', fontSize: '12.5px', lineHeight: '1.6', padding: '16px 20px', overflowY: 'auto', cursor: isReadOnly ? 'default' : 'text' }} />
+        {renderInput(key, value)}
+      </div>
+    )
+  }
+
+  const liveJson = JSON.stringify(formState, null, 2)
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '55fr 45fr', gap: '16px', alignItems: 'start' }}>
+
+      {/* ── Left: Form panel ──────────────────────────────────────────────── */}
+      <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+
+        {/* Header */}
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--color-border)', background: 'rgba(255,255,255,0.02)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <button onClick={() => { if (isDirty && !window.confirm('You have unsaved edits. Leave without saving?')) return; onDirtyChange?.(false); onBack() }}
+              style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'transparent', border: '1px solid var(--color-border)', borderRadius: '5px', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '4px 10px', fontSize: '12px' }}>
+              ← Back to list
+            </button>
+            <span style={{ color: 'var(--color-border)' }}>·</span>
+            <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>{humanLabel(entityType)}</span>
+            <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>›</span>
+            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)' }}>{displayName}</span>
+            {isDirty && (
+              <span style={{ fontSize: '11px', color: '#facc15', background: 'rgba(250,204,21,0.12)', border: '1px solid rgba(250,204,21,0.3)', padding: '1px 7px', borderRadius: '4px', fontWeight: 600 }}>Unsaved changes</span>
+            )}
+            {isSaved && !isDirty && (
+              <span style={{ fontSize: '11px', color: '#86efac', background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)', padding: '1px 7px', borderRadius: '4px', fontWeight: 600 }}>✓ Staged</span>
+            )}
+          </div>
+          {isReadOnly && (
+            <div style={{ marginTop: '8px', fontSize: '12px', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span>⚠</span> Read-only (Target snapshot) — download for reference only
+            </div>
+          )}
         </div>
-        <div style={{ padding: '12px 20px', borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', flexShrink: 0 }}>
-          <button onClick={onClose} style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>Cancel</button>
-          <button onClick={handleCopy} style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', background: copied ? 'rgba(34,197,94,0.12)' : 'rgba(255,255,255,0.07)', border: `1px solid ${copied ? '#86efac' : 'var(--color-border)'}`, color: copied ? '#16a34a' : 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: '6px', transition: 'all 0.2s' }}>
-            {copied
-              ? <><CheckIcon /> Copied!</>
-              : <><CopyIcon /> Copy JSON</>}
-          </button>
-          <button onClick={handleDownload} style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', background: 'rgba(255,255,255,0.07)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <DownloadIcon /> Download JSON
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!!jsonError || !!isReadOnly}
-            title={isReadOnly ? 'Target snapshot is read-only — switch to Source view to edit' : undefined}
-            style={{ padding: '8px 20px', borderRadius: '6px', cursor: (jsonError || isReadOnly) ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: 600, background: (jsonError || isReadOnly) ? 'rgba(204,0,0,0.4)' : 'var(--color-accent-red)', border: 'none', color: '#fff', opacity: (jsonError || isReadOnly) ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <SaveIcon /> Save Changes
+
+        {/* Form body */}
+        <div style={{ padding: '20px 24px', overflowY: 'auto', maxHeight: 'calc(100vh - 360px)' }}>
+
+          {/* Primary fields */}
+          {primaryKeys.length > 0 && (
+            <>
+              <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--color-text-secondary)', marginBottom: '14px', paddingBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: PAGE_COLOR, display: 'inline-block', flexShrink: 0 }} />
+                Primary Fields
+              </div>
+              {primaryKeys.map(key => renderField(key, formState[key], true))}
+            </>
+          )}
+
+          {/* Additional fields — collapsible */}
+          {additionalKeys.length > 0 && (
+            <div style={{ marginTop: primaryKeys.length > 0 ? '8px' : 0 }}>
+              <button type="button" onClick={() => setShowAdditional(p => !p)}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--color-border)', borderRadius: '6px', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '8px 12px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: showAdditional ? '14px' : 0 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '9px' }}>{showAdditional ? '▼' : '▶'}</span>
+                  Additional Fields
+                  <span style={{ background: 'rgba(255,255,255,0.08)', padding: '0 6px', borderRadius: '10px', fontWeight: 400, fontSize: '10px', textTransform: 'none', letterSpacing: 0 }}>{additionalKeys.length}</span>
+                </span>
+              </button>
+              {showAdditional && (
+                <div style={{ marginTop: '14px' }}>
+                  {additionalKeys.map(key => renderField(key, formState[key], false))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '14px 20px', borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, background: 'rgba(255,255,255,0.01)' }}>
+          <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+            {isReadOnly
+              ? <span style={{ color: '#f59e0b' }}>Target snapshot is read-only</span>
+              : hasErrors
+                ? <span style={{ color: '#fca5a5' }}>✕ Fix JSON errors before saving</span>
+                : isDirty
+                  ? 'Changes not yet staged'
+                  : isSaved
+                    ? 'Staged — go back and click Import to push to gateway'
+                    : 'No changes'}
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button onClick={() => { if (isDirty && !window.confirm('You have unsaved edits. Leave without saving?')) return; onDirtyChange?.(false); onBack() }}
+              style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
+              Cancel
+            </button>
+            {!isReadOnly && (
+              <button onClick={handleSave} disabled={hasErrors || !isDirty}
+                style={{ padding: '8px 20px', borderRadius: '6px', fontSize: '13px', fontWeight: 600, background: (hasErrors || !isDirty) ? `${PAGE_RGBA}0.3)` : PAGE_COLOR, border: 'none', color: '#fff', cursor: (hasErrors || !isDirty) ? 'not-allowed' : 'pointer', opacity: (hasErrors || !isDirty) ? 0.55 : 1, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <SaveIcon /> Save Changes
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Right: Live Bundle ─────────────────────────────────────────────── */}
+      <div style={{ position: 'sticky', top: '24px', background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', overflow: 'hidden' }}>
+
+        {/* Header */}
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--color-border)', background: 'rgba(255,255,255,0.02)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text-primary)' }}>Live Bundle</span>
+            <span style={{ background: PAGE_COLOR, color: '#fff', fontSize: '10px', fontWeight: 700, padding: '1px 7px', borderRadius: '4px', letterSpacing: '0.3px', flexShrink: 0 }}>{entityType}</span>
+            <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '160px' }}>{displayName}</span>
+          </div>
+          <button onClick={handleDownload}
+            style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '5px', cursor: 'pointer', fontSize: '12px', fontWeight: 500, background: downloaded ? 'rgba(34,197,94,0.12)' : 'rgba(255,255,255,0.07)', border: `1px solid ${downloaded ? '#86efac' : 'var(--color-border)'}`, color: downloaded ? '#86efac' : 'var(--color-text-primary)', transition: 'all 0.2s', flexShrink: 0 }}>
+            {downloaded ? <><CheckIcon /> Downloaded!</> : <><DownloadIcon /> Download</>}
           </button>
         </div>
+
+        {/* Live JSON */}
+        <pre style={{ margin: 0, padding: '16px 20px', background: '#0d1117', color: '#c9d1d9', fontFamily: 'ui-monospace,"Cascadia Code","Fira Code",monospace', fontSize: '12px', lineHeight: '1.6', overflowY: 'auto', maxHeight: 'calc(100vh - 260px)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+          {liveJson}
+        </pre>
       </div>
     </div>
   )
@@ -209,11 +425,8 @@ interface GatewayPanelProps {
 function GatewayPanel({ label, role, gatewayName, fileModified, dotColor, viewMode, myMode, refreshing, refreshElapsed, totalEntityTypes, totalItems, onRefresh, onCancel, onSwitchView, onGatewayChange, extraNote }: GatewayPanelProps) {
   const isActive = viewMode === myMode
   return (
-    <div style={{ padding: '18px 24px', position: 'relative' }}>
-      {/* Role label */}
+    <div style={{ padding: '18px 24px', position: 'relative', background: isActive ? `${dotColor}10` : 'transparent', boxShadow: isActive ? `inset 0 3px 0 0 ${dotColor}` : 'none', transition: 'background 0.2s' }}>
       <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: 'var(--color-text-secondary)', marginBottom: '8px' }}>{label} — {role}</div>
-
-      {/* Gateway name */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
         <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: fileModified ? dotColor : '#6b7280', flexShrink: 0 }} />
         {onGatewayChange ? (
@@ -223,8 +436,6 @@ function GatewayPanel({ label, role, gatewayName, fileModified, dotColor, viewMo
           <span style={{ fontSize: '18px', fontWeight: 700, color: 'var(--color-text-primary)', fontFamily: 'monospace' }}>{gatewayName || '—'}</span>
         )}
       </div>
-
-      {/* Stats row */}
       <div style={{ display: 'flex', gap: '20px', marginBottom: '14px', flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>Last Fetched</div>
@@ -243,10 +454,7 @@ function GatewayPanel({ label, role, gatewayName, fileModified, dotColor, viewMo
           </div>
         )}
       </div>
-
       {extraNote && <div style={{ fontSize: '11px', color: 'rgba(184,197,208,0.5)', marginBottom: '12px', lineHeight: '1.5' }}>{extraNote}</div>}
-
-      {/* Actions */}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
         <button onClick={onRefresh} disabled={refreshing}
           style={{ padding: '6px 14px', borderRadius: '6px', cursor: refreshing ? 'wait' : 'pointer', fontSize: '12px', fontWeight: 500, background: 'rgba(255,255,255,0.07)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: '6px', opacity: refreshing ? 0.6 : 1 }}>
@@ -262,7 +470,7 @@ function GatewayPanel({ label, role, gatewayName, fileModified, dotColor, viewMo
         )}
         <button onClick={onSwitchView}
           style={{ padding: '6px 14px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600, background: isActive ? 'var(--color-accent-red)' : 'transparent', border: `1px solid ${isActive ? 'var(--color-accent-red)' : 'var(--color-border)'}`, color: isActive ? '#fff' : 'var(--color-text-secondary)' }}>
-          {isActive ? '✓ Viewing this data' : 'View this data'}
+          {isActive ? `✓ Viewing ${gatewayName || 'this'} data` : `View ${gatewayName || 'this'} data`}
         </button>
       </div>
     </div>
@@ -274,17 +482,14 @@ function GatewayPanel({ label, role, gatewayName, fileModified, dotColor, viewMo
 const PAGE_SIZE = 25
 
 export default function EntityInspector() {
-  // Gateway / bundle meta
   const [sourceGateway, setSourceGateway]   = useState('')
   const [targetGateway, setTargetGateway]   = useState('')
   const [sourceFileModified, setSrcMod]     = useState<string | null>(null)
   const [targetFileModified, setTgtMod]     = useState<string | null>(null)
 
-  // Per-view stats (loaded fresh when switching view)
   const [srcStats, setSrcStats] = useState<{ types: number; items: number } | null>(null)
   const [tgtStats, setTgtStats] = useState<{ types: number; items: number } | null>(null)
 
-  // Entity list
   const [entityTypes, setEntityTypes]       = useState<string[]>([])
   const [counts, setCounts]                 = useState<Record<string, number>>({})
   const [bundleExists, setBundleExists]     = useState(true)
@@ -298,25 +503,25 @@ export default function EntityInspector() {
   const [search, setSearch]                 = useState('')
   const [page, setPage]                     = useState(1)
 
-  // Staged edits (keyed by entity identifier)
   const [editedItems, setEditedItems]       = useState<Record<string, Record<string, unknown>>>({})
+  const [selectedEdited, setSelectedEdited] = useState<Set<string>>(new Set())
   const [importingRows, setImportingRows]   = useState<Set<string>>(new Set())
   const [importStatus, setImportStatus]     = useState<{ name: string; success: boolean; message: string; suggestVerify?: boolean } | null>(null)
+  const [formDirty, setFormDirty]           = useState(false)
 
-  // Re-export state
   const [refreshingSource, setRefreshingSrc] = useState(false)
   const [refreshingTarget, setRefreshingTgt] = useState(false)
   const [refreshError, setRefreshError]      = useState<string | null>(null)
   const [refreshElapsed, setRefreshElapsed]  = useState(0)
   const refreshAbortRef = useRef<AbortController | null>(null)
 
-  // Edit modal
-  const [editItem, setEditItem]             = useState<Record<string, unknown> | null>(null)
+  // Inline form editor — replaces the old modal
+  const [editingItem, setEditingItem]       = useState<Record<string, unknown> | null>(null)
 
   const meta    = useMemo(() => getMeta(selectedType), [selectedType])
   const columns = useMemo<ColDef[]>(() => meta.columns.length > 0 ? meta.columns : (items[0] ? inferColumns(items[0]) : []), [meta, items])
 
-  // ── Load entity types for current view ──────────────────────────────────────
+  // ── Load entity types ──────────────────────────────────────────────────────
   const loadEntityTypes = useCallback((mode: ViewMode) => {
     setLoadingTypes(true)
     setBundleExists(true)
@@ -324,7 +529,6 @@ export default function EntityInspector() {
       .then(r => r.json())
       .then(data => {
         setBundleExists(data.exists ?? false)
-        // trustedCerts, keys, sslKeys are managed in Keys & Certificates page
         const CERT_TYPES = new Set(['trustedCerts', 'keys', 'sslKeys'])
         setEntityTypes((data.entities ?? []).filter((t: string) => !CERT_TYPES.has(t)))
         setCounts(data.counts ?? {})
@@ -341,7 +545,6 @@ export default function EntityInspector() {
 
   useEffect(() => { loadEntityTypes(viewMode) }, [loadEntityTypes, viewMode])
 
-  // Elapsed timer for re-export
   const refreshingAny = refreshingSource || refreshingTarget
   useEffect(() => {
     let t: ReturnType<typeof setInterval>
@@ -349,19 +552,22 @@ export default function EntityInspector() {
     return () => clearInterval(t)
   }, [refreshingAny])
 
-  // ── Switch view mode ──────────────────────────────────────────────────────────
+  // ── Switch view ────────────────────────────────────────────────────────────
   function switchView(mode: ViewMode) {
     if (mode === viewMode) return
     setViewMode(mode)
     setSelectedType('')
     setItems([])
     setEditedItems({})
+    setSelectedEdited(new Set())
     setImportStatus(null)
     setSearch('')
     setPage(1)
+    setEditingItem(null)
+    setFormDirty(false)
   }
 
-  // ── Load items for a type ──────────────────────────────────────────────────
+  // ── Load items ─────────────────────────────────────────────────────────────
   const loadItems = useCallback((type: string, mode: ViewMode) => {
     if (!type) return
     setLoadingItems(true); setItemsError(''); setItems([]); setPage(1); setSearch('')
@@ -373,10 +579,16 @@ export default function EntityInspector() {
   }, [])
 
   function handleTypeChange(type: string) {
-    setSelectedType(type); setEditedItems({}); setImportStatus(null); loadItems(type, viewMode)
+    setSelectedType(type)
+    setEditedItems({})
+    setSelectedEdited(new Set())
+    setImportStatus(null)
+    setEditingItem(null)
+    setFormDirty(false)
+    loadItems(type, viewMode)
   }
 
-  // ── Re-export from a gateway ──────────────────────────────────────────────
+  // ── Re-export ──────────────────────────────────────────────────────────────
   async function handleRefresh(outputKey: 'source' | 'target') {
     const gw = outputKey === 'target' ? targetGateway : sourceGateway
     const ac = new AbortController()
@@ -400,13 +612,12 @@ export default function EntityInspector() {
           loadEntityTypes(viewMode)
         }
       } else {
-        const msg = [data.error, data.hint].filter(Boolean).join(' — ')
-        setRefreshError(msg || 'Export failed.')
+        setRefreshError([data.error, data.hint].filter(Boolean).join(' — ') || 'Export failed.')
       }
     } catch (err: unknown) {
       const aborted = (err as { name?: string }).name === 'AbortError'
       setRefreshError(aborted
-        ? `Gateway "${gw}" did not respond within ${EXPORT_TIMEOUT_MS / 1000}s — it may be unreachable. Check network connectivity.`
+        ? `Gateway "${gw}" did not respond within ${EXPORT_TIMEOUT_MS / 1000}s — check network connectivity.`
         : String(err))
     } finally {
       clearTimeout(timer)
@@ -414,10 +625,11 @@ export default function EntityInspector() {
     }
   }
 
-  // ── Save from modal ───────────────────────────────────────────────────────
+  // ── Stage an edit ──────────────────────────────────────────────────────────
   function handleSave(originalItem: Record<string, unknown>, parsed: Record<string, unknown>) {
     const name = getEntityName(originalItem, meta)
     setEditedItems(prev => ({ ...prev, [name]: parsed }))
+    setSelectedEdited(prev => new Set([...prev, name]))
     setImportStatus(null)
   }
 
@@ -426,7 +638,7 @@ export default function EntityInspector() {
     const name = getEntityName(originalItem, meta)
     const entityData = editedItems[name]
     if (!entityData) return
-    const ac = new AbortController()
+    const ac    = new AbortController()
     const timer = setTimeout(() => ac.abort(), EXPORT_TIMEOUT_MS)
     setImportingRows(prev => new Set(prev).add(name)); setImportStatus(null)
     try {
@@ -439,11 +651,11 @@ export default function EntityInspector() {
       const data = await resp.json()
       if (data.success) {
         setEditedItems(prev => { const n = { ...prev }; delete n[name]; return n })
+        setSelectedEdited(prev => { const n = new Set(prev); n.delete(name); return n })
         setImportStatus({ name, success: true, message: `"${name}" imported to gateway "${targetGateway}" successfully. Switch to Target view to verify.`, suggestVerify: true })
         loadItems(selectedType, viewMode)
       } else {
-        const msg = [data.error, data.hint].filter(Boolean).join(' — ')
-        setImportStatus({ name, success: false, message: msg || 'Import failed.' })
+        setImportStatus({ name, success: false, message: [data.error, data.hint].filter(Boolean).join(' — ') || 'Import failed.' })
       }
     } catch (err: unknown) {
       const aborted = (err as { name?: string }).name === 'AbortError'
@@ -454,7 +666,53 @@ export default function EntityInspector() {
     }
   }
 
-  // ── Filter / paginate ─────────────────────────────────────────────────────
+  // ── Bulk import all selected staged entities ──────────────────────────────
+  async function handleImportSelected() {
+    const names = [...selectedEdited].filter(name => editedItems[name])
+    if (names.length === 0) return
+    setImportStatus(null)
+    setImportingRows(new Set(names))
+
+    const results = await Promise.allSettled(
+      names.map(async (name): Promise<{ name: string; ok: boolean }> => {
+        const entityData = editedItems[name]
+        const ac    = new AbortController()
+        const timer = setTimeout(() => ac.abort(), EXPORT_TIMEOUT_MS)
+        try {
+          const resp = await fetch('/api/entity-import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entityType: selectedType, entityData, gateway: targetGateway }),
+            signal: ac.signal,
+          })
+          const data = await resp.json()
+          if (data.success) {
+            setEditedItems(prev => { const n = { ...prev }; delete n[name]; return n })
+            setSelectedEdited(prev => { const n = new Set(prev); n.delete(name); return n })
+          }
+          return { name, ok: !!data.success }
+        } catch {
+          return { name, ok: false }
+        } finally {
+          clearTimeout(timer)
+          setImportingRows(prev => { const n = new Set(prev); n.delete(name); return n })
+        }
+      })
+    )
+
+    const successes = results.filter(r => r.status === 'fulfilled' && (r.value as { ok: boolean }).ok).length
+    const total     = results.length
+    const failures  = total - successes
+    setImportStatus({
+      name: '',
+      success: successes > 0,
+      message: `Bulk import: ${successes} of ${total} item${total > 1 ? 's' : ''} sent to "${targetGateway}" successfully.${failures > 0 ? ` ${failures} failed — check individually.` : ''}`,
+      suggestVerify: successes > 0,
+    })
+    if (successes > 0) loadItems(selectedType, viewMode)
+  }
+
+  // ── Filter / paginate ──────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     if (!search.trim()) return items
     const q = search.toLowerCase()
@@ -465,8 +723,16 @@ export default function EntityInspector() {
   const paginated     = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
   const modifiedCount = Object.keys(editedItems).length
 
+  const guardDirty   = formDirty || modifiedCount > 0
+  const guardMessage = formDirty
+    ? 'You have unsaved edits in the form editor. Leaving this page will discard those changes.'
+    : `You have ${modifiedCount} staged edit${modifiedCount > 1 ? 's' : ''} that haven't been imported to the gateway yet. The bundle file retains these changes, but the live gateway won't reflect them until you import.`
+  const navBlocker = useDirtyGuard(guardDirty)
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
+    <>
+    <NavigationBlocker blocker={navBlocker} description={guardMessage} />
     <div style={{ padding: '28px 32px', maxWidth: '1320px' }}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -476,15 +742,7 @@ export default function EntityInspector() {
       `}</style>
 
       {/* Page title */}
-      <div style={{
-        background: 'linear-gradient(135deg, rgba(120,53,15,0.10) 0%, rgba(120,53,15,0.03) 100%)',
-        border: '1px solid rgba(120,53,15,0.20)',
-        borderLeft: '4px solid #78350f',
-        borderRadius: '10px',
-        padding: '20px 24px',
-        marginBottom: '24px',
-        boxShadow: '0 2px 14px rgba(0,0,0,0.08)',
-      }}>
+      <div style={{ background: 'linear-gradient(135deg, rgba(120,53,15,0.10) 0%, rgba(120,53,15,0.03) 100%)', border: '1px solid rgba(120,53,15,0.20)', borderLeft: '4px solid #78350f', borderRadius: '10px', padding: '20px 24px', marginBottom: '24px', boxShadow: '0 2px 14px rgba(0,0,0,0.08)' }}>
         <h1 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--color-text-primary)', margin: 0, letterSpacing: '-0.2px' }}>
           Entity Inspector
           <span style={{ fontWeight: 400, fontSize: '15px', color: 'var(--color-text-secondary)', marginLeft: '12px', letterSpacing: '0' }}>— Browse, Edit and Import Entities</span>
@@ -502,9 +760,9 @@ export default function EntityInspector() {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0 }}>
           {[
-            { title: 'Load Gateway Data', desc: 'Export entity data from source and/or target gateways into local snapshots. Either or both can be loaded independently.' },
-            { title: 'Browse & Edit',     desc: 'Select any entity type and switch between Source and Target views. In Source view, open the JSON editor to stage changes before import.' },
-            { title: 'Selective Import',  desc: 'Import individual staged entities from the source snapshot to the target gateway. Target view is read-only and reflects gateway state.' },
+            { title: 'Load Gateway Data', desc: 'Export entity data from source and/or target gateways into local snapshots.' },
+            { title: 'Browse & Edit',     desc: 'Select an entity type, click any row to open the form editor with live bundle preview.' },
+            { title: 'Selective Import',  desc: 'Save stages your edits. Return to the list and click Import to push to the target gateway.' },
           ].map((item, idx) => (
             <div key={idx} style={{ display: 'flex', gap: '9px', padding: '0 14px', borderRight: idx < 2 ? '1px solid var(--color-border)' : 'none' }}>
               <span style={{ flexShrink: 0, width: '18px', height: '18px', borderRadius: '50%', background: PAGE_COLOR, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', fontWeight: 800, marginTop: '1px' }}>{idx + 1}</span>
@@ -517,7 +775,7 @@ export default function EntityInspector() {
         </div>
       </div>
 
-      {/* ── Workflow stepper ── */}
+      {/* Workflow stepper */}
       {(() => {
         const stepLabels = ['Load Gateway', 'Select Type', 'Browse & Edit', 'Import']
         const stepDone   = [sourceFileModified !== null, selectedType !== '', items.length > 0, importStatus?.success === true]
@@ -525,9 +783,7 @@ export default function EntityInspector() {
         return (
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: '20px', fontSize: '12px', fontWeight: 600 }}>
             {stepLabels.map((label, idx) => {
-              const n      = idx + 1
-              const active = n === activeStep
-              const done   = stepDone[idx]
+              const n = idx + 1; const active = n === activeStep; const done = stepDone[idx]
               return (
                 <div key={label} style={{ display: 'flex', alignItems: 'center' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 11px', borderRadius: '20px', background: active ? `${PAGE_RGBA}0.12)` : done ? 'rgba(34,197,94,0.08)' : 'transparent', color: active ? PAGE_COLOR : done ? '#15803d' : 'var(--color-text-secondary)', border: active ? `1px solid ${PAGE_RGBA}0.25)` : done ? '1px solid rgba(34,197,94,0.20)' : '1px solid transparent' }}>
@@ -546,38 +802,22 @@ export default function EntityInspector() {
         )
       })()}
 
-      {/* ── Gateway banner ──────────────────────────────────────────────────── */}
+      {/* Gateway banner */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1px 1fr', background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', marginBottom: '20px', overflow: 'hidden' }}>
         <GatewayPanel
-          label="Source Gateway" role="Source (Read)"
-          gatewayName={sourceGateway}
-          fileModified={sourceFileModified}
-          dotColor="#22c55e"
-          viewMode={viewMode} myMode="source"
-          refreshing={refreshingSource}
-          refreshElapsed={refreshingSource ? refreshElapsed : undefined}
-          totalEntityTypes={srcStats?.types}
-          totalItems={srcStats?.items}
-          onRefresh={() => handleRefresh('source')}
-          onCancel={() => refreshAbortRef.current?.abort()}
-          onSwitchView={() => switchView('source')}
-          extraNote="Re-export to get the latest state of the source gateway."
+          label="Source Gateway" role="Source (Read)" gatewayName={sourceGateway} fileModified={sourceFileModified} dotColor="#22c55e"
+          viewMode={viewMode} myMode="source" refreshing={refreshingSource} refreshElapsed={refreshingSource ? refreshElapsed : undefined}
+          totalEntityTypes={srcStats?.types} totalItems={srcStats?.items}
+          onRefresh={() => handleRefresh('source')} onCancel={() => refreshAbortRef.current?.abort()}
+          onSwitchView={() => switchView('source')} extraNote="Re-export to get the latest state of the source gateway."
         />
         <div style={{ background: 'var(--color-border)' }} />
         <GatewayPanel
-          label="Target Gateway" role="Target (Import)"
-          gatewayName={targetGateway}
-          fileModified={targetFileModified}
-          dotColor="#f59e0b"
-          viewMode={viewMode} myMode="target"
-          refreshing={refreshingTarget}
-          refreshElapsed={refreshingTarget ? refreshElapsed : undefined}
-          totalEntityTypes={tgtStats?.types}
-          totalItems={tgtStats?.items}
-          onRefresh={() => handleRefresh('target')}
-          onCancel={() => refreshAbortRef.current?.abort()}
-          onSwitchView={() => switchView('target')}
-          onGatewayChange={setTargetGateway}
+          label="Target Gateway" role="Target (Import)" gatewayName={targetGateway} fileModified={targetFileModified} dotColor="#f59e0b"
+          viewMode={viewMode} myMode="target" refreshing={refreshingTarget} refreshElapsed={refreshingTarget ? refreshElapsed : undefined}
+          totalEntityTypes={tgtStats?.types} totalItems={tgtStats?.items}
+          onRefresh={() => handleRefresh('target')} onCancel={() => refreshAbortRef.current?.abort()}
+          onSwitchView={() => switchView('target')} onGatewayChange={setTargetGateway}
           extraNote="After importing, re-export from target and switch to Target view to verify your changes."
         />
       </div>
@@ -590,9 +830,20 @@ export default function EntityInspector() {
         </div>
       )}
 
-      {/* ── Entity selector ─────────────────────────────────────────────────── */}
+      {/* Active gateway context bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 16px', marginBottom: '16px', borderRadius: '7px', background: viewMode === 'source' ? 'rgba(34,197,94,0.07)' : 'rgba(245,158,11,0.07)', border: `1px solid ${viewMode === 'source' ? 'rgba(34,197,94,0.22)' : 'rgba(245,158,11,0.22)'}` }}>
+        <div style={{ width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0, background: viewMode === 'source' ? '#22c55e' : '#f59e0b', boxShadow: `0 0 6px ${viewMode === 'source' ? '#22c55e80' : '#f59e0b80'}` }} />
+        <span style={{ fontSize: '13px', color: 'var(--color-text-primary)', fontWeight: 500 }}>
+          Currently viewing <strong>{viewMode === 'source' ? 'Source Gateway' : 'Target Gateway'}</strong> data
+          {' — '}
+          <span style={{ fontFamily: 'monospace', color: viewMode === 'source' ? '#86efac' : '#fcd34d', fontWeight: 700 }}>
+            {viewMode === 'source' ? (sourceGateway || '…') : (targetGateway || '…')}
+          </span>
+        </span>
+      </div>
+
+      {/* Entity selector */}
       <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '18px 24px', marginBottom: '16px' }}>
-        {/* View mode tab strip */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0', marginBottom: '16px', background: 'rgba(255,255,255,0.04)', borderRadius: '7px', padding: '3px', width: 'fit-content' }}>
           {(['source', 'target'] as ViewMode[]).map(mode => (
             <button key={mode} onClick={() => switchView(mode)}
@@ -601,16 +852,13 @@ export default function EntityInspector() {
             </button>
           ))}
         </div>
-
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: '16px', flexWrap: 'wrap' }}>
           <div style={{ flex: '0 0 auto' }}>
             <label style={labelSt}>Entity Type</label>
             {loadingTypes
               ? <div style={{ fontSize: '13px', color: 'var(--color-text-secondary)', padding: '8px 0' }}>Loading…</div>
               : !bundleExists
-                ? <div style={{ fontSize: '13px', color: '#fca5a5' }}>
-                    No {viewMode} bundle found. Click <strong>"Re-export from {viewMode === 'source' ? sourceGateway : targetGateway}"</strong> above.
-                  </div>
+                ? <div style={{ fontSize: '13px', color: '#fca5a5' }}>No {viewMode} bundle found. Click <strong>"Re-export from {viewMode === 'source' ? sourceGateway : targetGateway}"</strong> above.</div>
                 : (
                   <select value={selectedType} onChange={e => handleTypeChange(e.target.value)}
                     style={{ background: 'var(--color-input-bg)', border: '1px solid var(--color-border)', borderRadius: '6px', color: 'var(--color-text-primary)', padding: '8px 36px 8px 12px', fontSize: '13px', minWidth: '290px', cursor: 'pointer', appearance: 'none', backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23b8c5d0' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center' }}>
@@ -620,8 +868,7 @@ export default function EntityInspector() {
                 )
             }
           </div>
-
-          {selectedType && items.length > 0 && (
+          {selectedType && items.length > 0 && !editingItem && (
             <>
               <div style={{ flex: '1 1 200px' }}>
                 <label style={labelSt}>Filter</label>
@@ -636,8 +883,8 @@ export default function EntityInspector() {
         </div>
       </div>
 
-      {/* Entity description panel */}
-      {selectedType && !loadingItems && items.length > 0 && (
+      {/* Entity description — hidden while editing */}
+      {!editingItem && selectedType && !loadingItems && items.length > 0 && (
         <div style={{ background: 'rgba(204,0,0,0.06)', border: '1px solid rgba(204,0,0,0.2)', borderRadius: '8px', padding: '14px 20px', marginBottom: '16px', display: 'flex', alignItems: 'flex-start', gap: '20px' }}>
           <div style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
@@ -655,7 +902,7 @@ export default function EntityInspector() {
         </div>
       )}
 
-      {/* Import / refresh status banner */}
+      {/* Import / refresh status */}
       {importStatus && (
         <div style={{ marginBottom: '14px', padding: '12px 16px', borderRadius: '8px', fontSize: '13px', background: importStatus.success ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', color: importStatus.success ? '#86efac' : '#fca5a5', border: `1px solid ${importStatus.success ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`, display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           <span style={{ flex: 1 }}>{importStatus.success ? '✓ ' : '✕ '}{importStatus.message}</span>
@@ -684,8 +931,21 @@ export default function EntityInspector() {
       {/* Error */}
       {itemsError && <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', padding: '16px 20px', color: '#fca5a5', fontSize: '13px' }}>{itemsError}</div>}
 
-      {/* ── Items table ────────────────────────────────────────────────────── */}
-      {!loadingItems && !itemsError && selectedType && items.length > 0 && (
+      {/* ── Inline form editor (shown instead of table) ──────────────────── */}
+      {editingItem && (
+        <EntityFormEditor
+          entityType={selectedType}
+          item={editingItem}
+          savedEdit={editedItems[getEntityName(editingItem, meta)]}
+          isReadOnly={viewMode === 'target'}
+          onSave={parsed => handleSave(editingItem, parsed)}
+          onBack={() => { setFormDirty(false); setEditingItem(null) }}
+          onDirtyChange={setFormDirty}
+        />
+      )}
+
+      {/* ── Items table (hidden while editing) ──────────────────────────── */}
+      {!editingItem && !loadingItems && !itemsError && selectedType && items.length > 0 && (
         <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', overflow: 'hidden' }}>
           <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--color-text-primary)' }}>
@@ -697,11 +957,47 @@ export default function EntityInspector() {
             {totalPages > 1 && <Pager page={page} total={totalPages} onChange={setPage} />}
           </div>
 
+          {/* Staging bar — visible when staged edits exist */}
+          {modifiedCount > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 18px', borderBottom: '1px solid rgba(245,158,11,0.18)', background: 'rgba(245,158,11,0.06)', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '13px', fontWeight: 600, color: '#fcd34d' }}>
+                {modifiedCount} staged edit{modifiedCount > 1 ? 's' : ''}
+              </span>
+              <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => setSelectedEdited(new Set(Object.keys(editedItems)))}
+                  style={{ padding: '5px 12px', borderRadius: '5px', border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.1)', color: '#fcd34d', cursor: 'pointer', fontSize: '12px', fontWeight: 500 }}>
+                  Select All
+                </button>
+                <button
+                  onClick={handleImportSelected}
+                  disabled={selectedEdited.size === 0 || importingRows.size > 0}
+                  style={{ padding: '5px 14px', borderRadius: '5px', border: 'none', background: selectedEdited.size === 0 || importingRows.size > 0 ? 'rgba(204,0,0,0.3)' : 'var(--color-accent-red)', color: '#fff', cursor: selectedEdited.size === 0 || importingRows.size > 0 ? 'not-allowed' : 'pointer', fontSize: '12px', fontWeight: 700, opacity: selectedEdited.size === 0 || importingRows.size > 0 ? 0.6 : 1 }}>
+                  {importingRows.size > 0 ? '↑ Importing…' : `↑ Import Selected (${selectedEdited.size})`}
+                </button>
+                <button
+                  onClick={() => { setEditedItems({}); setSelectedEdited(new Set()); setImportStatus(null) }}
+                  disabled={importingRows.size > 0}
+                  style={{ padding: '5px 12px', borderRadius: '5px', border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.06)', color: '#fca5a5', cursor: importingRows.size > 0 ? 'not-allowed' : 'pointer', fontSize: '12px', fontWeight: 500, opacity: importingRows.size > 0 ? 0.5 : 1 }}>
+                  Clear All
+                </button>
+              </div>
+            </div>
+          )}
+
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: 'rgba(255,255,255,0.03)' }}>
-                  <th style={{ ...thSt, width: '36px' }}>#</th>
+                  <th style={{ ...thSt, width: '36px', textAlign: 'center' }}>
+                    {modifiedCount > 0
+                      ? <input type="checkbox" style={{ margin: 0, cursor: 'pointer', accentColor: '#f59e0b' }}
+                          checked={selectedEdited.size === modifiedCount}
+                          ref={el => { if (el) el.indeterminate = selectedEdited.size > 0 && selectedEdited.size < modifiedCount }}
+                          onChange={e => setSelectedEdited(e.target.checked ? new Set(Object.keys(editedItems)) : new Set())}
+                          title="Select / deselect all staged edits" />
+                      : '#'}
+                  </th>
                   {columns.map(col => <th key={col.key} style={thSt}>{col.label}</th>)}
                   <th style={{ ...thSt, width: viewMode === 'source' ? '160px' : '80px', textAlign: 'center' }}>Actions</th>
                 </tr>
@@ -715,7 +1011,13 @@ export default function EntityInspector() {
                   const displayItem = isEdited ? editedItems[name] : item
                   return (
                     <tr key={idx} className="eu-tr" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                      <td style={{ ...tdSt, color: 'var(--color-text-secondary)', fontSize: '11px' }}>{absIdx}</td>
+                      <td style={{ ...tdSt, textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: '11px' }}>
+                        {isEdited
+                          ? <input type="checkbox" style={{ margin: 0, cursor: 'pointer', accentColor: '#f59e0b' }}
+                              checked={selectedEdited.has(name)}
+                              onChange={e => setSelectedEdited(prev => { const n = new Set(prev); e.target.checked ? n.add(name) : n.delete(name); return n })} />
+                          : absIdx}
+                      </td>
                       {columns.map((col, ci) => {
                         const val = displayItem[col.key]
                         if (col.badge && val !== undefined && val !== null) {
@@ -730,7 +1032,7 @@ export default function EntityInspector() {
                           <td key={col.key} style={tdSt}>
                             {ci === 0 ? (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                <button onClick={() => setEditItem(item)}
+                                <button onClick={() => setEditingItem(item)}
                                   style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--color-accent-red)', fontWeight: 600, fontSize: '13px', textAlign: 'left', textDecoration: 'underline', textDecorationColor: 'rgba(204,0,0,0.4)' }}>
                                   {name}
                                 </button>
@@ -745,9 +1047,15 @@ export default function EntityInspector() {
                       <td style={{ ...tdSt, textAlign: 'center' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                           {viewMode === 'source' && (
-                            <button onClick={() => setEditItem(item)}
+                            <button onClick={() => setEditingItem(item)}
                               style={{ padding: '4px 10px', borderRadius: '5px', cursor: 'pointer', background: 'rgba(255,255,255,0.08)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', fontSize: '12px', fontWeight: 500 }}>
                               Edit
+                            </button>
+                          )}
+                          {viewMode === 'target' && (
+                            <button onClick={() => setEditingItem(item)}
+                              style={{ padding: '4px 10px', borderRadius: '5px', cursor: 'pointer', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', fontSize: '12px', fontWeight: 500 }}>
+                              View
                             </button>
                           )}
                           {isEdited && (
@@ -756,9 +1064,6 @@ export default function EntityInspector() {
                               style={{ padding: '4px 10px', borderRadius: '5px', cursor: isImporting ? 'wait' : 'pointer', background: 'var(--color-accent-red)', border: 'none', color: '#fff', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
                               {isImporting ? <><Spinner small />Importing…</> : <>↑ Import</>}
                             </button>
-                          )}
-                          {viewMode === 'target' && !isEdited && (
-                            <span style={{ fontSize: '11px', color: 'rgba(184,197,208,0.3)' }}>Read-only</span>
                           )}
                         </div>
                       </td>
@@ -778,12 +1083,12 @@ export default function EntityInspector() {
       )}
 
       {/* Empty states */}
-      {!loadingItems && !itemsError && selectedType && items.length === 0 && !loadingTypes && (
+      {!editingItem && !loadingItems && !itemsError && selectedType && items.length === 0 && !loadingTypes && (
         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--color-text-secondary)', fontSize: '13px', background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
           No items found for <strong>{selectedType}</strong> in the {viewMode} bundle.
         </div>
       )}
-      {!selectedType && bundleExists && !loadingTypes && (
+      {!editingItem && !selectedType && bundleExists && !loadingTypes && (
         <div style={{ textAlign: 'center', padding: '60px 32px', color: 'var(--color-text-secondary)', fontSize: '13px', background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.25, margin: '0 auto 12px', display: 'block' }}>
             <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
@@ -791,19 +1096,8 @@ export default function EntityInspector() {
           Select an entity type above to browse its items.
         </div>
       )}
-
-      {/* Edit modal */}
-      {editItem && (
-        <EditModal
-          entityType={selectedType}
-          item={editItem}
-          savedEdit={editedItems[getEntityName(editItem, meta)]}
-          isReadOnly={viewMode === 'target'}
-          onSave={parsed => handleSave(editItem, parsed)}
-          onClose={() => setEditItem(null)}
-        />
-      )}
     </div>
+    </>
   )
 }
 
@@ -828,9 +1122,6 @@ function RefreshIcon() {
 }
 function DownloadIcon() {
   return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-}
-function CopyIcon() {
-  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
 }
 function CheckIcon() {
   return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>

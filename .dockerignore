@@ -32,7 +32,6 @@ app/config.json
 # ── Runtime data directories (recreated fresh by the app on startup) ──────────
 app/response
 app/generated
-app/Sample
 
 # ── Documentation ─────────────────────────────────────────────────────────────
 app/*.md

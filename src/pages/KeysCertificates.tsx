@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useDirtyGuard } from '../hooks/useDirtyGuard'
+import { NavigationBlocker } from '../components/NavigationBlocker'
 
 const PAGE_COLOR = '#065f46'
 const PAGE_RGBA  = 'rgba(6,95,70,'
@@ -20,7 +22,10 @@ interface CertItem extends Record<string, unknown> {
   keystoreId?:    string
   trustedForSsl?: boolean
   verifyHostname?: boolean
-  certBase64?:    string
+  certBase64?:    string   // trustedCerts only
+  p12?:           string   // keys: base64-encoded PKCS#12 bundle
+  pem?:           string   // keys: PEM-encoded encrypted private key
+  certChain?:     string[] // keys: PEM certificate chain
 }
 
 interface ExpiryStatus {
@@ -62,96 +67,286 @@ function truncate(s: string | undefined, n = 55) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s
 }
 
-// ─── Edit Modal ───────────────────────────────────────────────────────────────
+// ─── Field metadata for form editor ──────────────────────────────────────────
 
-interface EditModalProps {
+interface CertFieldDef { key: string; label: string; type: 'readonly' | 'boolean' | 'textarea'; desc?: string }
+
+const TRUSTED_CERT_FIELDS: CertFieldDef[] = [
+  { key: 'name',                         label: 'Name',                             type: 'readonly',  desc: 'Display name — primary identifier' },
+  { key: 'trustedForSsl',                label: 'Trusted for SSL',                  type: 'boolean',   desc: 'Include this cert in the SSL trust store' },
+  { key: 'verifyHostname',               label: 'Verify Hostname',                  type: 'boolean',   desc: 'Verify the certificate CN matches the connecting hostname' },
+  { key: 'trustAnchor',                  label: 'Trust Anchor',                     type: 'boolean',   desc: 'Treat as a root / trust anchor' },
+  { key: 'revocationCheckingEnabled',    label: 'Revocation Checking',              type: 'boolean',   desc: 'Enable OCSP / CRL revocation checking' },
+  { key: 'trustedAsSamlIssuer',          label: 'Trusted as SAML Issuer',           type: 'boolean',   desc: 'Accept SAML tokens signed by this cert' },
+  { key: 'trustedAsSamlAttestingEntity', label: 'Trusted as SAML Attesting Entity', type: 'boolean',   desc: 'Accept SAML holder-of-key assertions from this entity' },
+  { key: 'subjectDn',                    label: 'Subject DN',                       type: 'readonly' },
+  { key: 'issuerDn',                     label: 'Issuer DN',                        type: 'readonly' },
+  { key: 'notBefore',                    label: 'Not Before',                       type: 'readonly' },
+  { key: 'notAfter',                     label: 'Not After',                        type: 'readonly' },
+  { key: 'thumbprintSha1',               label: 'SHA1 Thumbprint',                  type: 'readonly' },
+  { key: 'certBase64',                   label: 'Certificate (Base64 DER)',          type: 'textarea',  desc: 'Paste a new DER base64 value only when renewing this certificate.' },
+]
+
+// Keys are replace-only: alias/keystoreId/keyType/subjectDn are derived from the key itself.
+// The only meaningful update is to provide new p12 (PKCS#12) or pem (encrypted PEM) material.
+const PRIVATE_KEY_FIELDS: CertFieldDef[] = [
+  { key: 'alias',      label: 'Alias',                      type: 'readonly', desc: 'Key alias — primary identifier' },
+  { key: 'keystoreId', label: 'Keystore ID',                type: 'readonly' },
+  { key: 'keyType',    label: 'Key Type',                   type: 'readonly' },
+  { key: 'subjectDn',  label: 'Subject DN',                 type: 'readonly' },
+  { key: 'issuerDn',   label: 'Issuer DN',                  type: 'readonly' },
+  { key: 'notBefore',  label: 'Not Before',                 type: 'readonly' },
+  { key: 'notAfter',   label: 'Not After',                  type: 'readonly' },
+  { key: 'p12',        label: 'PKCS#12 Bundle (Base64)',     type: 'textarea', desc: 'To replace this key: paste a new Base64-encoded PKCS#12 bundle (contains private key + cert chain).' },
+  { key: 'pem',        label: 'PEM Private Key',            type: 'textarea', desc: 'To replace this key: paste a new PEM-encoded encrypted private key.' },
+]
+
+// Keys exported in certChain (PEM array) — displayed read-only alongside Additional Fields
+const KEY_KNOWN_EXTRA = ['certChain', 'checksum', 'goid']
+
+// ─── Cert / Key inline form editor ────────────────────────────────────────────
+
+interface CertFormEditorProps {
   entityType: EntityType
   item: CertItem
   savedEdit?: CertItem
-  onSave:  (parsed: CertItem) => void
-  onClose: () => void
+  isReadOnly: boolean
+  onSave: (parsed: CertItem) => void
+  onBack: () => void
+  onDirtyChange?: (dirty: boolean) => void
 }
 
-function EditModal({ entityType, item, savedEdit, onSave, onClose }: EditModalProps) {
-  const initialJson = JSON.stringify(savedEdit ?? item, null, 2)
-  const [jsonText, setJsonText] = useState(initialJson)
-  const [jsonError, setJsonError] = useState('')
-  const [isDirty, setIsDirty]   = useState(false)
-  const [copied, setCopied]     = useState(false)
+function CertFormEditor({ entityType, item, savedEdit, isReadOnly, onSave, onBack, onDirtyChange }: CertFormEditorProps) {
+  const [formState, setFormState] = useState<CertItem>({ ...(savedEdit ?? item) })
+  const [isDirty, setIsDirty]     = useState(false)
+  const [isSaved, setIsSaved]     = useState(!!savedEdit)
+  // Per-textarea-field expand state; auto-expand all for keys (only editable material) or when savedEdit exists
+  const [expandedFields, setExpandedFields] = useState<Record<string, boolean>>(() => {
+    const tFields = (entityType === 'keys' ? PRIVATE_KEY_FIELDS : TRUSTED_CERT_FIELDS).filter(f => f.type === 'textarea')
+    if (entityType === 'keys' || !!savedEdit) return Object.fromEntries(tFields.map(f => [f.key, true]))
+    return {}
+  })
+  const [copied, setCopied]       = useState(false)
+  const [downloaded, setDownloaded] = useState(false)
 
-  const id = getItemId(item)
+  const id     = getItemId(item)
+  const isKey  = entityType === 'keys'
+  const fields = isKey ? PRIVATE_KEY_FIELDS : TRUSTED_CERT_FIELDS
+  const liveJson = JSON.stringify({ [entityType]: [formState] }, null, 2)
 
-  function handleChange(text: string) {
-    setJsonText(text); setIsDirty(text !== initialJson)
-    try { JSON.parse(text); setJsonError('') } catch (e: unknown) { setJsonError((e as Error).message) }
+  useEffect(() => { onDirtyChange?.(isDirty) }, [isDirty, onDirtyChange])
+
+  function setField(key: string, value: unknown) {
+    if (isReadOnly) return
+    setFormState(prev => ({ ...prev, [key]: value }))
+    setIsDirty(true); setIsSaved(false)
   }
 
-  function handleCopy() {
-    navigator.clipboard.writeText(jsonText).then(() => {
-      setCopied(true); setTimeout(() => setCopied(false), 2000)
-    }).catch(() => {})
+  function handleSave() {
+    if (isReadOnly) return
+    onSave(formState); setIsDirty(false); setIsSaved(true)
   }
+
+  function handleBack() {
+    if (isDirty && !window.confirm('You have unsaved edits. Leave without saving?')) return
+    onDirtyChange?.(false); onBack()
+  }
+
   function handleDownload() {
-    let parsed: unknown; try { parsed = JSON.parse(jsonText) } catch { parsed = item }
-    const blob = new Blob([JSON.stringify({ [entityType]: [parsed] }, null, 2)], { type: 'application/json' })
+    const blob = new Blob([liveJson], { type: 'application/json' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a'); a.href = url
     a.download = `${entityType}_${id.replace(/[^a-z0-9]/gi, '_')}.json`
     a.click(); URL.revokeObjectURL(url)
+    setDownloaded(true); setTimeout(() => setDownloaded(false), 2000)
   }
 
-  function handleSave() {
-    if (jsonError) return
-    try { onSave(JSON.parse(jsonText) as CertItem); onClose() }
-    catch { setJsonError('Invalid JSON – fix errors before saving.') }
+  function handleCopy() {
+    navigator.clipboard.writeText(liveJson).then(() => {
+      setCopied(true); setTimeout(() => setCopied(false), 2000)
+    }).catch(() => {})
   }
+
+  const knownKeys      = [...fields.map(f => f.key), ...(isKey ? KEY_KNOWN_EXTRA : [])]
+  const booleanFields  = fields.filter(f => f.type === 'boolean')
+  const readonlyFields = fields.filter(f => f.type === 'readonly')
+  const textareaFields = fields.filter(f => f.type === 'textarea')
+  const additionalKeys = Object.keys(formState).filter(k => !knownKeys.includes(k))
+
+  const INPUT_ST: React.CSSProperties = { padding: '7px 10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '5px', fontSize: '12px', fontFamily: 'ui-monospace,monospace', color: 'var(--color-text-secondary)', wordBreak: 'break-all', lineHeight: 1.5, width: '100%', boxSizing: 'border-box' }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}
-         onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '10px', display: 'flex', flexDirection: 'column', width: '900px', maxWidth: '96vw', height: '88vh', overflow: 'hidden', boxShadow: '0 24px 64px rgba(0,0,0,0.5)' }}>
+    <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', overflow: 'hidden', marginBottom: '16px' }}>
 
-        {/* Modal header */}
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ background: 'var(--color-accent-red)', color: '#fff', fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px' }}>
-                {entityType === 'trustedCerts' ? 'Trusted Cert' : 'Private Key'}
-              </span>
-              <span style={{ fontSize: '15px', fontWeight: 600, color: 'var(--color-text-primary)' }}>{id}</span>
-              {isDirty && <span style={{ fontSize: '11px', color: '#facc15', background: 'rgba(250,204,21,0.12)', border: '1px solid rgba(250,204,21,0.3)', padding: '1px 7px', borderRadius: '4px' }}>Unsaved changes</span>}
-            </div>
-            <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)', marginTop: '4px' }}>
-              Edit the JSON. <strong>Copy</strong> to clipboard. <strong>Save</strong> stages changes. <strong>Import</strong> in the table pushes to gateway. <strong>Download</strong> saves to file.
-            </div>
-          </div>
-          <button onClick={onClose} style={{ background: 'transparent', border: '1px solid var(--color-border)', borderRadius: '6px', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '6px 10px', fontSize: '18px', lineHeight: 1 }}>×</button>
+      {/* ── Header ── */}
+      <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: '10px', background: 'var(--color-header-bg)', flexWrap: 'wrap' }}>
+        <button onClick={handleBack}
+          style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'transparent', border: '1px solid var(--color-border)', borderRadius: '5px', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '4px 10px', fontSize: '12px', flexShrink: 0 }}>
+          ← Back to list
+        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
+          <span style={{ background: PAGE_COLOR, color: '#fff', fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+            {isKey ? 'Private Key' : 'Trusted Cert'}
+          </span>
+          <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{id}</span>
+          {isReadOnly  && <span style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', background: 'rgba(107,114,128,0.12)', border: '1px solid rgba(107,114,128,0.25)', padding: '1px 7px', borderRadius: '4px', whiteSpace: 'nowrap' }}>READ-ONLY</span>}
+          {isDirty     && <span style={{ fontSize: '10px', fontWeight: 700, color: '#facc15', background: 'rgba(250,204,21,0.12)', border: '1px solid rgba(250,204,21,0.3)',  padding: '1px 7px', borderRadius: '4px', whiteSpace: 'nowrap' }}>UNSAVED</span>}
+          {isSaved && !isDirty && <span style={{ fontSize: '10px', fontWeight: 700, color: '#86efac', background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)', padding: '1px 7px', borderRadius: '4px', whiteSpace: 'nowrap' }}>✓ STAGED</span>}
         </div>
+        <button onClick={handleDownload}
+          style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '5px', cursor: 'pointer', fontSize: '12px', fontWeight: 500, background: downloaded ? 'rgba(34,197,94,0.12)' : 'rgba(255,255,255,0.06)', border: `1px solid ${downloaded ? 'rgba(34,197,94,0.35)' : 'var(--color-border)'}`, color: downloaded ? '#86efac' : 'var(--color-text-secondary)', transition: 'all 0.2s', flexShrink: 0 }}>
+          <DownloadIcon size={12} /> {downloaded ? 'Downloaded!' : 'Download'}
+        </button>
+      </div>
 
-        {/* Editor */}
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {jsonError && (
-            <div style={{ padding: '8px 20px', background: 'rgba(239,68,68,0.12)', borderBottom: '1px solid rgba(239,68,68,0.25)', color: '#fca5a5', fontSize: '12px', flexShrink: 0 }}>
-              JSON error: {jsonError}
+      {/* ── Split panel ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 390px', minHeight: '520px' }}>
+
+        {/* Left — form */}
+        <div style={{ padding: '20px 24px', overflowY: 'auto', borderRight: '1px solid var(--color-border)' }}>
+
+          {/* Trust / behaviour toggles */}
+          {booleanFields.some(f => formState[f.key] !== undefined || item[f.key] !== undefined) && (
+            <section style={{ marginBottom: '22px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.7px', color: 'var(--color-text-secondary)', marginBottom: '12px' }}>Trust Settings</div>
+              {booleanFields.map(f => {
+                const cur = formState[f.key]
+                if (cur === undefined && item[f.key] === undefined) return null
+                const bval = Boolean(cur ?? item[f.key] ?? false)
+                return (
+                  <div key={f.key} style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <div style={{ flex: 1, marginRight: '16px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)' }}>{f.label}</div>
+                      {f.desc && <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginTop: '2px', lineHeight: 1.4 }}>{f.desc}</div>}
+                    </div>
+                    <div onClick={() => setField(f.key, !bval)}
+                      style={{ width: '38px', height: '20px', borderRadius: '10px', cursor: isReadOnly ? 'default' : 'pointer', background: bval ? '#22c55e' : 'rgba(255,255,255,0.12)', position: 'relative', transition: 'background 0.2s', flexShrink: 0 }}>
+                      <div style={{ position: 'absolute', top: '2px', left: bval ? '20px' : '2px', width: '16px', height: '16px', borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+                    </div>
+                  </div>
+                )
+              })}
+            </section>
+          )}
+
+          {/* Read-only info fields */}
+          <section style={{ marginBottom: '22px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.7px', color: 'var(--color-text-secondary)', marginBottom: '12px' }}>{isKey ? 'Key Details' : 'Certificate Info'}</div>
+            {readonlyFields.map(f => {
+              const val = formState[f.key]
+              if (val === undefined || val === null || val === '') return null
+              return (
+                <div key={f.key} style={{ marginBottom: '10px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '3px' }}>{f.label}</div>
+                  <div style={INPUT_ST}>{String(val)}</div>
+                </div>
+              )
+            })}
+          </section>
+
+          {/* Key-replacement notice */}
+          {isKey && (
+            <div style={{ marginBottom: '20px', padding: '10px 14px', borderRadius: '6px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', fontSize: '12px', color: '#fcd34d', lineHeight: 1.5 }}>
+              <strong>Replace-only:</strong> Key metadata (alias, type, subject) is determined by the key material itself and cannot be edited directly.
+              To replace this key, paste a new <strong>PKCS#12</strong> or <strong>PEM</strong> bundle in the field below, then save and import.
             </div>
           )}
-          <textarea value={jsonText} onChange={e => handleChange(e.target.value)} spellCheck={false}
-            style={{ flex: 1, resize: 'none', background: '#0d1117', color: '#c9d1d9', border: 'none', outline: 'none', fontFamily: 'ui-monospace,"Cascadia Code","Fira Code",monospace', fontSize: '12.5px', lineHeight: '1.6', padding: '16px 20px', overflowY: 'auto' }} />
+
+          {/* Textarea fields — certBase64 for trustedCerts; p12 / pem for keys */}
+          {/* Textarea always stays in DOM (CSS display) so focus/value survive re-renders */}
+          {textareaFields.map(f => {
+            const rawVal = formState[f.key] ?? item[f.key]
+            if (rawVal === undefined || rawVal === null) return null
+            const str = typeof rawVal === 'string' ? rawVal : JSON.stringify(rawVal)
+            const textareaVal = typeof formState[f.key] === 'string' ? formState[f.key] as string : JSON.stringify(formState[f.key] ?? '')
+            const expanded = !!expandedFields[f.key]
+            return (
+              <section key={f.key} style={{ marginBottom: '22px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--color-text-secondary)' }}>{f.label}</div>
+                  <button type="button"
+                    onClick={() => setExpandedFields(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
+                    style={{ fontSize: '11px', background: 'transparent', border: '1px solid var(--color-border)', borderRadius: '4px', color: 'var(--color-text-secondary)', cursor: 'pointer', padding: '2px 8px' }}>
+                    {expanded ? 'Collapse' : 'Expand'}
+                  </button>
+                </div>
+                {f.desc && <div style={{ fontSize: '11px', color: 'rgba(184,197,208,0.4)', marginBottom: '6px', lineHeight: 1.4 }}>{f.desc}</div>}
+                <textarea
+                  value={textareaVal}
+                  onChange={e => setField(f.key, e.target.value)}
+                  readOnly={isReadOnly} rows={8} spellCheck={false}
+                  style={{ display: expanded ? 'block' : 'none', width: '100%', resize: 'vertical', background: '#0d1117', color: '#c9d1d9', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '5px', fontFamily: 'ui-monospace,monospace', fontSize: '11px', lineHeight: '1.5', padding: '10px 12px', outline: 'none', boxSizing: 'border-box', opacity: isReadOnly ? 0.6 : 1 }} />
+                <div style={{ display: expanded ? 'none' : 'block', ...INPUT_ST, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {str.slice(0, 80)}{str.length > 80 ? `… (+${str.length - 80} chars)` : ''}
+                </div>
+              </section>
+            )
+          })}
+
+          {/* certChain — read-only PEM cert chain display (keys only) */}
+          {isKey && Array.isArray(item.certChain) && (item.certChain as string[]).length > 0 && (
+            <section style={{ marginBottom: '22px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '6px' }}>
+                Certificate Chain ({(item.certChain as string[]).length} cert{(item.certChain as string[]).length > 1 ? 's' : ''})
+              </div>
+              {(item.certChain as string[]).map((pem, i) => (
+                <div key={i} style={{ ...INPUT_ST, marginBottom: '6px', fontSize: '10px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {pem.trim().slice(0, 100)}{pem.trim().length > 100 ? '…' : ''}
+                </div>
+              ))}
+            </section>
+          )}
+
+          {/* Additional / unknown fields */}
+          {additionalKeys.length > 0 && (
+            <section style={{ marginBottom: '22px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.7px', color: 'var(--color-text-secondary)', marginBottom: '12px' }}>Additional Fields</div>
+              {additionalKeys.map(k => (
+                <div key={k} style={{ marginBottom: '8px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '3px' }}>{k}</div>
+                  <div style={{ ...INPUT_ST, color: 'rgba(184,197,208,0.5)' }}>
+                    {typeof formState[k] === 'object' ? JSON.stringify(formState[k]) : String(formState[k] ?? '')}
+                  </div>
+                </div>
+              ))}
+            </section>
+          )}
+
+          {/* Action buttons */}
+          {!isReadOnly && (
+            <div style={{ paddingTop: '16px', borderTop: '1px solid var(--color-border)', display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button onClick={handleBack}
+                style={{ padding: '8px 18px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
+                Cancel
+              </button>
+              <button onClick={handleSave} disabled={!isDirty}
+                style={{ padding: '8px 20px', borderRadius: '6px', cursor: isDirty ? 'pointer' : 'not-allowed', fontSize: '13px', fontWeight: 700, background: isDirty ? PAGE_COLOR : `${PAGE_RGBA}0.4)`, border: 'none', color: '#fff', opacity: isDirty ? 1 : 0.55, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <SaveIcon /> Save to Staging
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Footer */}
-        <div style={{ padding: '12px 20px', borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', flexShrink: 0 }}>
-          <button onClick={onClose} style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', background: 'transparent', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>Cancel</button>
-          <button onClick={handleCopy} style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', background: copied ? 'rgba(34,197,94,0.12)' : 'rgba(255,255,255,0.07)', border: `1px solid ${copied ? '#86efac' : 'var(--color-border)'}`, color: copied ? '#16a34a' : 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: '6px', transition: 'all 0.2s' }}>
-            {copied ? <><KCCheckIcon /> Copied!</> : <><KCCopyIcon /> Copy JSON</>}
-          </button>
-          <button onClick={handleDownload} style={{ padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', background: 'rgba(255,255,255,0.07)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <DownloadIcon size={13} /> Download JSON
-          </button>
-          <button onClick={handleSave} disabled={!!jsonError}
-            style={{ padding: '8px 20px', borderRadius: '6px', cursor: jsonError ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: 600, background: jsonError ? 'rgba(204,0,0,0.4)' : 'var(--color-accent-red)', border: 'none', color: '#fff', opacity: jsonError ? 0.6 : 1, display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <SaveIcon /> Save Changes
-          </button>
+        {/* Right — live JSON */}
+        <div style={{ background: '#0d1117', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ padding: '10px 14px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, gap: '8px' }}>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: '#8b949e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Bundle — <span style={{ color: '#c9d1d9' }}>{entityType}_{id.replace(/[^a-z0-9]/gi, '_')}.json</span>
+            </span>
+            <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+              <button onClick={handleCopy}
+                style={{ fontSize: '11px', padding: '3px 9px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.12)', background: copied ? 'rgba(34,197,94,0.15)' : 'transparent', color: copied ? '#86efac' : '#8b949e', cursor: 'pointer', transition: 'all 0.2s' }}>
+                {copied ? '✓ Copied' : 'Copy'}
+              </button>
+              <button onClick={handleDownload}
+                style={{ fontSize: '11px', padding: '3px 9px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', color: '#8b949e', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                <DownloadIcon size={10} /> DL
+              </button>
+            </div>
+          </div>
+          <pre style={{ flex: 1, margin: 0, padding: '16px', overflowY: 'auto', fontFamily: 'ui-monospace,"Cascadia Code","Fira Code",monospace', fontSize: '11.5px', lineHeight: '1.65', color: '#c9d1d9', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {liveJson}
+          </pre>
         </div>
       </div>
     </div>
@@ -194,7 +389,7 @@ interface GwPanelProps {
 }
 function GwPanel({ role, gatewayName, fileModified, dotColor, isActive, refreshing, refreshElapsed, onRefresh, onCancel, onActivate, onNameChange, note }: GwPanelProps) {
   return (
-    <div style={{ padding: '18px 24px' }}>
+    <div style={{ padding: '18px 24px', background: isActive ? `${dotColor}10` : 'transparent', boxShadow: isActive ? `inset 0 3px 0 0 ${dotColor}` : 'none', transition: 'background 0.2s' }}>
       <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: 'var(--color-text-secondary)', marginBottom: '8px' }}>{role}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
         <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: fileModified ? dotColor : '#6b7280', flexShrink: 0 }} />
@@ -221,7 +416,7 @@ function GwPanel({ role, gatewayName, fileModified, dotColor, isActive, refreshi
         )}
         <button onClick={onActivate}
           style={{ padding: '6px 14px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600, background: isActive ? 'var(--color-accent-red)' : 'transparent', border: `1px solid ${isActive ? 'var(--color-accent-red)' : 'var(--color-border)'}`, color: isActive ? '#fff' : 'var(--color-text-secondary)' }}>
-          {isActive ? '✓ Viewing this data' : 'View this data'}
+          {isActive ? `✓ Viewing ${gatewayName || 'this'} data` : `View ${gatewayName || 'this'} data`}
         </button>
       </div>
     </div>
@@ -263,8 +458,10 @@ export default function KeysCertificates() {
 
   // Staged edits (keyed by name/alias)
   const [editedItems, setEditedItems]   = useState<Record<string, CertItem>>({})
+  const [selectedEdited, setSelectedEdited] = useState<Set<string>>(new Set())
   const [importingRows, setImportingRows] = useState<Set<string>>(new Set())
   const [importStatus, setImportStatus] = useState<{ id: string; success: boolean; message: string; suggestVerify?: boolean } | null>(null)
+  const [formDirty, setFormDirty]       = useState(false)
 
   // Edit modal
   const [editItem, setEditItem] = useState<CertItem | null>(null)
@@ -303,14 +500,14 @@ export default function KeysCertificates() {
   }, [refreshingAny])
 
   function handleTypeChange(type: EntityType) {
-    setEntityType(type); setEditedItems({}); setImportStatus(null)
+    setEntityType(type); setEditedItems({}); setSelectedEdited(new Set()); setImportStatus(null); setFormDirty(false)
     if (type) loadItems(type, viewMode)
     else { setItems([]); setItemsError('') }
   }
 
   function switchView(mode: ViewMode) {
     if (mode === viewMode) return
-    setViewMode(mode); setItems([]); setEditedItems({}); setImportStatus(null); setSearch(''); setPage(1)
+    setViewMode(mode); setItems([]); setEditedItems({}); setSelectedEdited(new Set()); setImportStatus(null); setSearch(''); setPage(1); setFormDirty(false)
     if (entityType) loadItems(entityType, mode)
   }
 
@@ -352,6 +549,7 @@ export default function KeysCertificates() {
   function handleSave(originalItem: CertItem, parsed: CertItem) {
     const id = getItemId(originalItem)
     setEditedItems(prev => ({ ...prev, [id]: parsed }))
+    setSelectedEdited(prev => new Set([...prev, id]))
     setImportStatus(null)
   }
 
@@ -373,6 +571,7 @@ export default function KeysCertificates() {
       const d = await resp.json()
       if (d.success) {
         setEditedItems(prev => { const n = { ...prev }; delete n[id]; return n })
+        setSelectedEdited(prev => { const n = new Set(prev); n.delete(id); return n })
         setImportStatus({ id, success: true, message: `"${id}" imported to "${targetGateway}" successfully. Re-export from Target to verify.`, suggestVerify: true })
         loadItems(entityType, viewMode)
       } else {
@@ -422,8 +621,62 @@ export default function KeysCertificates() {
 
   const isKeyType = entityType === 'keys'
 
+  const guardDirty   = formDirty || modifiedCount > 0
+  const guardMessage = formDirty
+    ? 'You have unsaved edits in the JSON editor. Leaving this page will discard those changes.'
+    : `You have ${modifiedCount} staged edit${modifiedCount > 1 ? 's' : ''} that haven't been imported to the gateway yet. The bundle file retains these changes, but the live gateway won't reflect them until you import.`
+  const navBlocker = useDirtyGuard(guardDirty)
+
+  // ── Bulk import all selected staged items ──────────────────────────────────
+  async function handleImportSelected() {
+    const ids = [...selectedEdited].filter(id => editedItems[id])
+    if (ids.length === 0) return
+    setImportStatus(null)
+    setImportingRows(new Set(ids))
+
+    const results = await Promise.allSettled(
+      ids.map(async (id): Promise<{ id: string; ok: boolean }> => {
+        const entityData = editedItems[id]
+        const ac    = new AbortController()
+        const timer = setTimeout(() => ac.abort(), EXPORT_TIMEOUT_MS)
+        try {
+          const resp = await fetch('/api/entity-import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entityType, entityData, gateway: targetGateway }),
+            signal: ac.signal,
+          })
+          const d = await resp.json()
+          if (d.success) {
+            setEditedItems(prev => { const n = { ...prev }; delete n[id]; return n })
+            setSelectedEdited(prev => { const n = new Set(prev); n.delete(id); return n })
+          }
+          return { id, ok: !!d.success }
+        } catch {
+          return { id, ok: false }
+        } finally {
+          clearTimeout(timer)
+          setImportingRows(prev => { const n = new Set(prev); n.delete(id); return n })
+        }
+      })
+    )
+
+    const successes = results.filter(r => r.status === 'fulfilled' && (r.value as { ok: boolean }).ok).length
+    const total     = results.length
+    const failures  = total - successes
+    setImportStatus({
+      id: '',
+      success: successes > 0,
+      message: `Bulk import: ${successes} of ${total} item${total > 1 ? 's' : ''} sent to "${targetGateway}" successfully.${failures > 0 ? ` ${failures} failed — check individually.` : ''}`,
+      suggestVerify: successes > 0,
+    })
+    if (successes > 0) loadItems(entityType, viewMode)
+  }
+
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
+    <>
+    <NavigationBlocker blocker={navBlocker} description={guardMessage} />
     <div style={{ padding: '28px 32px', maxWidth: '1400px' }}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -527,6 +780,18 @@ export default function KeysCertificates() {
         </div>
       )}
 
+      {/* Active gateway context bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 16px', marginBottom: '16px', borderRadius: '7px', background: viewMode === 'source' ? 'rgba(34,197,94,0.07)' : 'rgba(245,158,11,0.07)', border: `1px solid ${viewMode === 'source' ? 'rgba(34,197,94,0.22)' : 'rgba(245,158,11,0.22)'}` }}>
+        <div style={{ width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0, background: viewMode === 'source' ? '#22c55e' : '#f59e0b', boxShadow: `0 0 6px ${viewMode === 'source' ? '#22c55e80' : '#f59e0b80'}` }} />
+        <span style={{ fontSize: '13px', color: 'var(--color-text-primary)', fontWeight: 500 }}>
+          Currently viewing <strong>{viewMode === 'source' ? 'Source Gateway' : 'Target Gateway'}</strong> data
+          {' — '}
+          <span style={{ fontFamily: 'monospace', color: viewMode === 'source' ? '#86efac' : '#fcd34d', fontWeight: 700 }}>
+            {viewMode === 'source' ? (sourceGateway || '…') : (targetGateway || '…')}
+          </span>
+        </span>
+      </div>
+
       {/* Controls */}
       <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', padding: '18px 24px', marginBottom: '16px' }}>
         {/* Source / Target tab strip */}
@@ -608,18 +873,31 @@ export default function KeysCertificates() {
         </div>
       )}
 
+      {/* ── Inline form editor — replaces table while editing ── */}
+      {editItem && (
+        <CertFormEditor
+          entityType={entityType}
+          item={editItem}
+          savedEdit={editedItems[getItemId(editItem)]}
+          isReadOnly={viewMode === 'target'}
+          onSave={parsed => handleSave(editItem, parsed)}
+          onBack={() => { setFormDirty(false); setEditItem(null) }}
+          onDirtyChange={setFormDirty}
+        />
+      )}
+
       {/* Loading */}
-      {loadingItems && (
+      {!editItem && loadingItems && (
         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--color-text-secondary)', background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
           <Spinner /> <div style={{ marginTop: '12px', fontSize: '13px' }}>Loading…</div>
         </div>
       )}
 
       {/* Error */}
-      {itemsError && <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', padding: '16px 20px', color: '#fca5a5', fontSize: '13px' }}>{itemsError}</div>}
+      {!editItem && itemsError && <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', padding: '16px 20px', color: '#fca5a5', fontSize: '13px' }}>{itemsError}</div>}
 
       {/* Table */}
-      {!loadingItems && !itemsError && items.length > 0 && (
+      {!editItem && !loadingItems && !itemsError && items.length > 0 && (
         <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px', overflow: 'hidden' }}>
           {/* Toolbar */}
           <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
@@ -632,11 +910,47 @@ export default function KeysCertificates() {
             {totalPages > 1 && <Pager page={page} total={totalPages} onChange={setPage} />}
           </div>
 
+          {/* Staging bar */}
+          {modifiedCount > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 18px', borderBottom: '1px solid rgba(245,158,11,0.18)', background: 'rgba(245,158,11,0.06)', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '13px', fontWeight: 600, color: '#fcd34d' }}>
+                {modifiedCount} staged edit{modifiedCount > 1 ? 's' : ''}
+              </span>
+              <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => setSelectedEdited(new Set(Object.keys(editedItems)))}
+                  style={{ padding: '5px 12px', borderRadius: '5px', border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.1)', color: '#fcd34d', cursor: 'pointer', fontSize: '12px', fontWeight: 500 }}>
+                  Select All
+                </button>
+                <button
+                  onClick={handleImportSelected}
+                  disabled={selectedEdited.size === 0 || importingRows.size > 0}
+                  style={{ padding: '5px 14px', borderRadius: '5px', border: 'none', background: selectedEdited.size === 0 || importingRows.size > 0 ? 'rgba(204,0,0,0.3)' : 'var(--color-accent-red)', color: '#fff', cursor: selectedEdited.size === 0 || importingRows.size > 0 ? 'not-allowed' : 'pointer', fontSize: '12px', fontWeight: 700, opacity: selectedEdited.size === 0 || importingRows.size > 0 ? 0.6 : 1 }}>
+                  {importingRows.size > 0 ? '↑ Importing…' : `↑ Import Selected (${selectedEdited.size})`}
+                </button>
+                <button
+                  onClick={() => { setEditedItems({}); setSelectedEdited(new Set()); setImportStatus(null) }}
+                  disabled={importingRows.size > 0}
+                  style={{ padding: '5px 12px', borderRadius: '5px', border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.06)', color: '#fca5a5', cursor: importingRows.size > 0 ? 'not-allowed' : 'pointer', fontSize: '12px', fontWeight: 500, opacity: importingRows.size > 0 ? 0.5 : 1 }}>
+                  Clear All
+                </button>
+              </div>
+            </div>
+          )}
+
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: 'rgba(255,255,255,0.03)' }}>
-                  <th style={{ ...thSt, width: '32px' }}>#</th>
+                  <th style={{ ...thSt, width: '32px', textAlign: 'center' }}>
+                    {modifiedCount > 0
+                      ? <input type="checkbox" style={{ margin: 0, cursor: 'pointer', accentColor: '#f59e0b' }}
+                          checked={selectedEdited.size === modifiedCount}
+                          ref={el => { if (el) el.indeterminate = selectedEdited.size > 0 && selectedEdited.size < modifiedCount }}
+                          onChange={e => setSelectedEdited(e.target.checked ? new Set(Object.keys(editedItems)) : new Set())}
+                          title="Select / deselect all staged edits" />
+                      : '#'}
+                  </th>
                   <th style={{ ...thSt, width: '130px' }}>Status</th>
                   <th style={thSt}>{isKeyType ? 'Alias' : 'Name'}</th>
                   {!isKeyType && <th style={{ ...thSt, width: '80px' }}>SSL</th>}
@@ -661,7 +975,13 @@ export default function KeysCertificates() {
 
                   return (
                     <tr key={idx} className="kc-tr" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                      <td style={{ ...tdSt, color: 'var(--color-text-secondary)', fontSize: '11px' }}>{absIdx}</td>
+                      <td style={{ ...tdSt, textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: '11px' }}>
+                        {isEdited
+                          ? <input type="checkbox" style={{ margin: 0, cursor: 'pointer', accentColor: '#f59e0b' }}
+                              checked={selectedEdited.has(id)}
+                              onChange={e => setSelectedEdited(prev => { const n = new Set(prev); e.target.checked ? n.add(id) : n.delete(id); return n })} />
+                          : absIdx}
+                      </td>
 
                       {/* Status badge */}
                       <td style={tdSt}>
@@ -725,15 +1045,18 @@ export default function KeysCertificates() {
                               Edit
                             </button>
                           )}
+                          {viewMode === 'target' && (
+                            <button onClick={() => setEditItem(rawItem)}
+                              style={{ padding: '4px 10px', borderRadius: '5px', cursor: 'pointer', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)', fontSize: '12px', fontWeight: 500 }}>
+                              View
+                            </button>
+                          )}
                           {isEdited && (
                             <button onClick={() => handleImportRow(rawItem)} disabled={isImporting}
                               className="kc-import-btn"
                               style={{ padding: '4px 10px', borderRadius: '5px', cursor: isImporting ? 'wait' : 'pointer', background: 'var(--color-accent-red)', border: 'none', color: '#fff', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
                               {isImporting ? <><Spinner small />…</> : <>↑ Import</>}
                             </button>
-                          )}
-                          {viewMode === 'target' && !isEdited && (
-                            <span style={{ fontSize: '11px', color: 'rgba(184,197,208,0.3)' }}>Read-only</span>
                           )}
                         </div>
                       </td>
@@ -753,12 +1076,12 @@ export default function KeysCertificates() {
       )}
 
       {/* Empty states */}
-      {!loadingItems && !itemsError && entityType && items.length === 0 && (
+      {!editItem && !loadingItems && !itemsError && entityType && items.length === 0 && (
         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--color-text-secondary)', fontSize: '13px', background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
           No items found for <strong>{entityType}</strong> in the {viewMode} bundle.
         </div>
       )}
-      {!entityType && (
+      {!editItem && !entityType && (
         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--color-text-secondary)', fontSize: '13px', background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.25, margin: '0 auto 12px', display: 'block' }}>
             <path d="M12 22s-8-4.5-8-11.8V5l8-3 8 3v5.2c0 7.3-8 11.8-8 11.8z"/><polyline points="9 12 11 14 15 10"/>
@@ -766,13 +1089,8 @@ export default function KeysCertificates() {
           Select <strong>Trusted Certificates</strong> or <strong>Private Keys</strong> to begin.
         </div>
       )}
-
-      {/* Edit modal */}
-      {editItem && (
-        <EditModal entityType={entityType} item={editItem} savedEdit={editedItems[getItemId(editItem)]}
-          onSave={parsed => handleSave(editItem, parsed)} onClose={() => setEditItem(null)} />
-      )}
     </div>
+    </>
   )
 }
 
@@ -791,13 +1109,6 @@ function DownloadIcon({ size = 14 }: { size?: number }) {
 function SaveIcon() {
   return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
 }
-function KCCopyIcon() {
-  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-}
-function KCCheckIcon() {
-  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-}
-
 function Pager({ page, total, onChange }: { page: number; total: number; onChange: (p: number) => void }) {
   const list = buildPageList(page, total)
   return (

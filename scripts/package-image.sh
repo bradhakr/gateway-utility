@@ -1,9 +1,9 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Package.sh — Build and push the Gateway Utility Docker image
+# package-image.sh — Build and push the Gateway Utility Docker image
 #
 # USAGE:
-#   ./Package.sh [OPTIONS]
+#   ./scripts/package-image.sh [OPTIONS]
 #
 # OPTIONS:
 #   -r, --registry          <registry>   Container registry  (e.g. docker.io/bradhakr)
@@ -21,17 +21,18 @@
 #
 # EXAMPLES:
 #   # Build and push (amd64):
-#   ./Package.sh --npm-token "$TOKEN" --registry docker.io/bradhakr --tag 1.0.0 --push
+#   ./scripts/package-image.sh --npm-token "$TOKEN" --registry docker.io/bradhakr --tag 1.0.0 --push
 #
 #   # Local graphman-client, no registry access needed:
-#   ./Package.sh --local-graphman ~/graphman-client-main --registry docker.io/bradhakr --push
+#   ./scripts/package-image.sh --local-graphman ~/graphman-client-main --registry docker.io/bradhakr --push
 #
 #   # Local test build only (no push):
-#   ./Package.sh --npm-token "$TOKEN"
+#   ./scripts/package-image.sh --npm-token "$TOKEN"
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 REGISTRY="${REGISTRY:-}"
 IMAGE_NAME="${IMAGE_NAME:-gateway-utility}"
@@ -104,8 +105,8 @@ trap cleanup EXIT
 echo "► Preparing build context..."
 BUILD_CTX="$(mktemp -d)"
 
-# Copy app files — explicitly exclude Dockerfile/dockerignore so they don't
-# land inside app/ and get double-copied by "COPY app/ ./".
+# Copy app files from the project root — explicitly exclude Dockerfile/dockerignore
+# so they don't land inside app/ and get double-copied by "COPY app/ ./".
 rsync -a --quiet \
   --exclude='node_modules' \
   --exclude='.DS_Store' \
@@ -126,16 +127,16 @@ rsync -a --quiet \
   --exclude='package*.json' \
   --exclude='auth-config.json' \
   --exclude='config.json' \
-  "$SCRIPT_DIR/" "$BUILD_CTX/app/"
+  "$PROJECT_DIR/" "$BUILD_CTX/app/"
 
-cp "$SCRIPT_DIR/Dockerfile"    "$BUILD_CTX/"
-cp "$SCRIPT_DIR/.dockerignore" "$BUILD_CTX/" 2>/dev/null || true
+cp "$PROJECT_DIR/Dockerfile"    "$BUILD_CTX/"
+cp "$PROJECT_DIR/.dockerignore" "$BUILD_CTX/" 2>/dev/null || true
 
 # Install production-only node_modules locally so Docker never needs to run npm.
 # All production deps are pure JS — macOS-built modules work on Linux unchanged.
 echo "  Installing production node_modules locally..."
 PROD_INSTALL="$(mktemp -d)"
-cp "$SCRIPT_DIR/package.json" "$SCRIPT_DIR/package-lock.json" "$PROD_INSTALL/"
+cp "$PROJECT_DIR/package.json" "$PROJECT_DIR/package-lock.json" "$PROD_INSTALL/"
 (cd "$PROD_INSTALL" && npm ci --omit=dev --silent)
 mv "$PROD_INSTALL/node_modules" "$BUILD_CTX/app/node_modules"
 rm -rf "$PROD_INSTALL"

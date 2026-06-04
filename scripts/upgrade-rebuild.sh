@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Upgrade-Rebuild-GWUtility.sh
+# upgrade-rebuild.sh
 #
 # Rebuilds the Gateway Utility Docker image, pushes it to Docker Hub, then
 # triggers a zero-downtime rolling restart on both gu-dev and gu-prod.
@@ -150,7 +150,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "► Step 1: Build and push  ${REGISTRY}/${IMAGE_NAME}:${TAG}"
 echo ""
 
-"${SCRIPT_DIR}/../Package.sh" \
+"${SCRIPT_DIR}/package-image.sh" \
   --registry   "$REGISTRY"   \
   --name       "$IMAGE_NAME" \
   --tag        "$TAG"        \

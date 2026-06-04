@@ -65,19 +65,19 @@ spec:
             - name: config-json
               mountPath: /app/config.json
               subPath: config.json
-              readOnly: true
+              # readOnly: false
 
             # auth-config.json from ConfigMap — gateway & OIDC endpoints
             - name: config-json
               mountPath: /app/auth-config.json
               subPath: auth-config.json
-              readOnly: true
+              # readOnly: false
 
             # graphman.configuration from Secret — mounted as a single file
             - name: graphman-config
               mountPath: /app/graphman-client/graphman.configuration
               subPath: graphman.configuration
-              readOnly: true
+              # readOnly: false
 
             # Writable scratch directories for temporary export/import files
             - name: response-dir

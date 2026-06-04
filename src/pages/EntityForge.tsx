@@ -299,7 +299,9 @@ function ResultPanel({ ok, message, hint, detail, onDismiss }: {
 export default function EntityForge() {
   // All gateways + schema come from graphman.configuration — no config.json dependency.
   const [gwEntries, setGwEntries]         = useState<GatewayEntry[]>([])
-  const [graphmanSchema, setGraphmanSchema] = useState('v11.1.00')
+  // Start empty — filled by graphman-config on mount. Prevents a stale fetch racing
+  // against the real schema version and overwriting a successful load with an error.
+  const [graphmanSchema, setGraphmanSchema] = useState('')
 
   // Step state
   const [step, setStep] = useState<Step>(1)
@@ -378,16 +380,21 @@ export default function EntityForge() {
           ([name, gw]) => ({ name, ...(gw as Omit<GatewayEntry, 'name'>) })
         )
         setGwEntries(entries)
-        if (d.options?.schema) setGraphmanSchema(d.options.schema)
+        if (!d.options?.schema) throw new Error('options.schema is not set in graphman.configuration. Open App Config and add it.')
+        setGraphmanSchema(d.options.schema)
         if (entries.length > 0) setSelectedGateway(entries[0].name)
       })
       .catch(e => setConfigError(`Could not load graphman configuration: ${e.message}. Is the API server running on port 3002?`))
   }, [])
 
   // ── Load schema using graphman.configuration options.schema ──────────────
+  // Guard: skip until graphman-config has provided the real schema version.
+  // AbortController cancels any in-flight fetch if the version changes mid-flight.
   useEffect(() => {
+    if (!graphmanSchema) return
+    const ac = new AbortController()
     setSchemaLoading(true); setSchemaError('')
-    fetch(`${API}/schema/describe?schemaVersion=${encodeURIComponent(graphmanSchema)}`)
+    fetch(`${API}/schema/describe?schemaVersion=${encodeURIComponent(graphmanSchema)}`, { signal: ac.signal })
       .then(async r => {
         if (!r.ok) {
           const d = await r.json().catch(() => ({}))
@@ -396,8 +403,9 @@ export default function EntityForge() {
         return r.json()
       })
       .then(d => { if (d.success) setSchemaData(d); else setSchemaError(d.error || 'Failed to load schema.') })
-      .catch(e => setSchemaError(e.message || 'Cannot reach API server on port 3002.'))
+      .catch(e => { if (e.name !== 'AbortError') setSchemaError(e.message || 'Cannot reach API server on port 3002.') })
       .finally(() => setSchemaLoading(false))
+    return () => ac.abort()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schemaRetry, graphmanSchema])
 
@@ -828,7 +836,7 @@ export default function EntityForge() {
                 </button>
               </div>
 
-              <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '560px', overflowY: 'auto' }}>
+              <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {/* Identity fields first */}
                 {typeSchema.fields
                   .filter(f => typeSchema.identityFields.includes(f.name))
@@ -865,8 +873,8 @@ export default function EntityForge() {
               </div>
             </div>
 
-            {/* Live JSON preview column */}
-            <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden', position: 'sticky', top: '72px' }}>
+            {/* Live JSON preview column — sticky relative to main's scroll container */}
+            <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden', position: 'sticky', top: '16px' }}>
               <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: PAGE_COLOR, animation: 'pulse 2s infinite' }} />
                 <span style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--color-text-primary)' }}>Live Bundle Preview</span>
@@ -1027,8 +1035,8 @@ export default function EntityForge() {
             </div>
           </div>
 
-          {/* Final bundle preview */}
-          <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden', position: 'sticky', top: '72px' }}>
+          {/* Final bundle preview — sticky relative to main's scroll container */}
+          <div style={{ background: 'var(--color-card-bg)', border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden', position: 'sticky', top: '16px' }}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--color-text-primary)' }}>Final Bundle</span>
               <button onClick={() => navigator.clipboard?.writeText(fmtJson(currentBundle))}
