@@ -37,6 +37,10 @@ scripts/vendor/manifest.json
 # ── Script-generated reports ──────────────────────────────────────────────────
 scripts/validation-report.txt
 
+# ── Docs excluded from version control ───────────────────────────────────────
+docs/Config-Write-Options.md
+docs/GitHub-Repo-Guide.md
+
 # ── OS / editor artefacts ─────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

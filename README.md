@@ -324,7 +324,7 @@ Obtain the `graphman-client-main` directory from your team (clone from your inte
 ```bash
 # Example — clone one level above the GatewayUtility folder so the default path resolves automatically
 cd ~/Documents/APIM/Graphman/Scripts
-git clone https://github.gwd.broadcom.net/<your-org>/graphman-client-main.git
+git clone https://github.com/<your-org>/graphman-client-main.git
 ```
 
 After this, the directory structure should look like:
@@ -635,7 +635,7 @@ git status
 git commit -m "Initial commit: Gateway Utility application"
 
 # Add your remote (GitHub, GitLab, Bitbucket, etc.)
-git remote add origin https://github.gwd.broadcom.net/br661896/gateway-utility.git
+git remote add origin https://github.<specific domain>/<username or org name>/gateway-utility.git
 git push -u origin main
 ```
 
