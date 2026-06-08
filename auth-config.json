@@ -5,13 +5,15 @@
     "logoffUrl": "https://ssggw.vks.security.broadcom.com/rest/gu/logoff"
   },
   "oidc": {
-    "discoveryUrl": "https://<your-idsp-host>/default/.well-known/openid-configuration",
-    "clientId": "<your-client-id>",
+    "discoveryUrl": "https://idsp.vks.security.broadcom.com/default/.well-known/openid-configuration",
+    "clientId": "4aa58d46-99a3-4c72-8686-764d770c4dcc",
     "clientSecret": "",
     "redirectUri": "http://localhost:5173/auth/callback",
     "postLogoutRedirectUri": "http://localhost:5173/login",
-    "scopes": "openid profile email",
+    "scopes": "openid",
     "sessionMaxAgeSeconds": 3600,
-    "introspectionIntervalSeconds": 300
+    "introspectionIntervalSeconds": 300,
+    "pkceEnabled": true,
+    "tokenEndpointAuthMethod": "client_secret_post"
   }
 }

@@ -302,7 +302,13 @@ app.get('/api/auth/oidc-discover', async (_req, res) => {
   }
 });
 
-// ─── OIDC Init — generate PKCE + state + nonce, store in session ──────────────
+// ─── OIDC Init — generate state + nonce (+ optional PKCE), store in session ───
+//
+// pkceEnabled (default true): set to false in Auth Setup when the redirect_uri
+// points to an intermediary server (e.g. API Gateway) that calls the token
+// endpoint itself — that server has no code_verifier so PKCE must be omitted.
+// Set to true (recommended) when redirect_uri points to this app's /auth/callback
+// so the BFF token exchange can supply the code_verifier.
 
 app.get('/api/auth/oidc-init', async (req, res) => {
   const cfg = loadAuthConfig();
@@ -317,29 +323,35 @@ app.get('/api/auth/oidc-init', async (req, res) => {
     if (dr.status !== 200) throw new Error(`Discovery returned HTTP ${dr.status}`);
     const doc = JSON.parse(dr.body);
 
-    // Generate PKCE (S256) — https://tools.ietf.org/html/rfc7636
-    const codeVerifier = crypto.randomBytes(48).toString('base64url');
-    const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
-
     // Anti-CSRF state + replay-protection nonce
     const state = crypto.randomBytes(24).toString('hex');
     const nonce = crypto.randomBytes(24).toString('hex');
 
+    // Build base authorization URL
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id:     oidc.clientId,
+      redirect_uri:  oidc.redirectUri,
+      scope:         oidc.scopes || 'openid profile email',
+      state,
+      nonce,
+    });
+
+    // PKCE (S256) — enabled by default; disable via pkceEnabled: false in Auth Setup.
+    // Only use PKCE when this app's /auth/callback is the redirect_uri so the
+    // BFF token exchange endpoint (/api/auth/token-exchange) can supply code_verifier.
+    const usePkce = oidc.pkceEnabled !== false;
+    let codeVerifier;
+    if (usePkce) {
+      codeVerifier = crypto.randomBytes(48).toString('base64url');
+      const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+      params.set('code_challenge_method', 'S256');
+      params.set('code_challenge', codeChallenge);
+    }
+
     // Store in server-side session (BFF — nothing sensitive sent to browser)
     req.session.oidcPending = { codeVerifier, state, nonce, doc };
     await new Promise((ok, fail) => req.session.save(e => e ? fail(e) : ok(undefined)));
-
-    // Build authorization URL
-    const params = new URLSearchParams({
-      response_type:         'code',
-      client_id:             oidc.clientId,
-      redirect_uri:          oidc.redirectUri,
-      scope:                 oidc.scopes || 'openid profile email',
-      state,
-      nonce,
-      code_challenge_method: 'S256',
-      code_challenge:        codeChallenge,
-    });
 
     res.json({ success: true, authUrl: `${doc.authorization_endpoint}?${params.toString()}` });
   } catch (err) {
@@ -361,25 +373,54 @@ app.post('/api/auth/token-exchange', async (req, res) => {
   const { doc, codeVerifier, nonce } = pending;
 
   try {
-    // Exchange authorization code for tokens
+    // ── Build token request body ──────────────────────────────────────────────
+    // tokenEndpointAuthMethod controls how client credentials are sent:
+    //   client_secret_post  (default) — client_id + client_secret in POST body
+    //   client_secret_basic           — Authorization: Basic base64(id:secret) header
+    //   none                          — public client; only client_id in body (PKCE flow)
+    const authMethod = oidc.tokenEndpointAuthMethod || 'client_secret_post';
+
     const tokenBody = new URLSearchParams({
-      grant_type:    'authorization_code',
+      grant_type:   'authorization_code',
       code,
-      client_id:     oidc.clientId,
-      redirect_uri:  oidc.redirectUri,
-      code_verifier: codeVerifier,
+      redirect_uri: oidc.redirectUri,
     });
-    // Add client_secret if configured (confidential client fallback)
-    if (oidc.clientSecret) tokenBody.set('client_secret', oidc.clientSecret);
+    if (codeVerifier) tokenBody.set('code_verifier', codeVerifier);
+
+    const tokenHeaders = { 'Content-Type': 'application/x-www-form-urlencoded' };
+
+    if (authMethod === 'client_secret_basic') {
+      // RFC 6749 §2.3.1 — credentials in Authorization header, NOT in body
+      const credentials = Buffer.from(
+        `${encodeURIComponent(oidc.clientId)}:${encodeURIComponent(oidc.clientSecret || '')}`
+      ).toString('base64');
+      tokenHeaders['Authorization'] = `Basic ${credentials}`;
+    } else {
+      // client_secret_post or none — client_id (and optional secret) in body
+      tokenBody.set('client_id', oidc.clientId);
+      if (authMethod === 'client_secret_post' && oidc.clientSecret) {
+        tokenBody.set('client_secret', oidc.clientSecret);
+      }
+    }
 
     const tokenResp = await fetchUrl(doc.token_endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: tokenBody.toString(),
+      method:  'POST',
+      headers: tokenHeaders,
+      body:    tokenBody.toString(),
     });
 
     if (tokenResp.status !== 200) {
-      return res.status(502).json({ success: false, error: `Token endpoint returned HTTP ${tokenResp.status}`, detail: tokenResp.body });
+      // Extract the most useful error message from the IDSP response
+      let idspError = tokenResp.body;
+      try {
+        const parsed = JSON.parse(tokenResp.body);
+        idspError = parsed.error_description || parsed.error || parsed.msg || parsed.message || tokenResp.body;
+      } catch (_) { /* body is not JSON */ }
+      return res.status(502).json({
+        success: false,
+        error:   `Token endpoint returned HTTP ${tokenResp.status}: ${idspError}`,
+        detail:  tokenResp.body,
+      });
     }
 
     const tokens = JSON.parse(tokenResp.body);

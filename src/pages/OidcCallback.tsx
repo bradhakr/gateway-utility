@@ -30,6 +30,16 @@ export default function OidcCallback() {
       return
     }
 
+    // Determine rendering context:
+    //   popup  — opened as a separate browser window (primary path)
+    //   direct — full-page redirect (popup-blocked fallback)
+    const inPopup = !!(window.opener && !window.opener.closed)
+
+    function signalParent(type: 'oidc-success' | 'oidc-error', payload: Record<string, string>) {
+      window.opener.postMessage({ type, ...payload }, window.location.origin)
+      window.close()
+    }
+
     // Exchange authorization code for tokens via the BFF backend
     fetch('/api/auth/token-exchange', {
       method:  'POST',
@@ -39,17 +49,32 @@ export default function OidcCallback() {
       .then(r => r.json())
       .then(d => {
         if (d.success) {
-          // Tell AuthContext an OIDC session is now active (session managed by cookie)
-          oidcLogin(d.username, d.email || '')
-          navigate('/dashboard', { replace: true })
+          if (inPopup) {
+            // Running in OIDC popup — signal the parent login page and close
+            signalParent('oidc-success', { username: d.username || '', email: d.email || '' })
+          } else {
+            // Direct full-page navigation (popup-blocked fallback) — normal flow
+            oidcLogin(d.username, d.email || '')
+            navigate('/dashboard', { replace: true })
+          }
         } else {
-          setErrorMsg(d.error || 'Token exchange failed.')
-          setStatus('error')
+          const msg = d.error || 'Token exchange failed.'
+          if (inPopup) {
+            signalParent('oidc-error', { message: msg })
+          } else {
+            setErrorMsg(msg)
+            setStatus('error')
+          }
         }
       })
       .catch(e => {
-        setErrorMsg(`Network error during token exchange: ${String(e)}`)
-        setStatus('error')
+        const msg = `Network error during token exchange: ${String(e)}`
+        if (inPopup) {
+          signalParent('oidc-error', { message: msg })
+        } else {
+          setErrorMsg(msg)
+          setStatus('error')
+        }
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

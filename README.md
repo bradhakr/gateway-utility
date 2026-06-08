@@ -86,20 +86,23 @@ graphman-client  (separate CLI tool — NOT an npm package in this repo)
 Layer7 API Gateway
 ```
 
-| Layer | Technology | Role |
-|-------|-----------|------|
-| Frontend | React 18, TypeScript 5, Vite 5, React Router v6 (data router — `createBrowserRouter`) | Single-page application — all UI pages; `useBlocker` navigation guards on pages with unsaved changes |
-| Backend | Node.js 20, Express 4 | BFF: REST API server, proxies auth, shells out to graphman |
-| Session | express-session | Server-side session (cookie with `httpOnly`, `sameSite: lax`) |
-| Auth | jose (JWT/OIDC) | ID-token validation via JWKS; PKCE code exchange |
-| Gateway CLI | graphman-client (separate install) | Import/export bundles, manage entities — called via `graphman.sh` |
-| Config | config.json, auth-config.json, graphman.configuration | Runtime settings — never committed with real values |
+
+| Layer       | Technology                                                                            | Role                                                                                                 |
+| ----------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Frontend    | React 18, TypeScript 5, Vite 5, React Router v6 (data router — `createBrowserRouter`) | Single-page application — all UI pages; `useBlocker` navigation guards on pages with unsaved changes |
+| Backend     | Node.js 20, Express 4                                                                 | BFF: REST API server, proxies auth, shells out to graphman                                           |
+| Session     | express-session                                                                       | Server-side session (cookie with `httpOnly`, `sameSite: lax`)                                        |
+| Auth        | jose (JWT/OIDC)                                                                       | ID-token validation via JWKS; PKCE code exchange                                                     |
+| Gateway CLI | graphman-client (separate install)                                                    | Import/export bundles, manage entities — called via `graphman.sh`                                    |
+| Config      | config.json, auth-config.json, graphman.configuration                                 | Runtime settings — never committed with real values                                                  |
+
 
 **Development mode** (`npm run dev`): Vite starts on **port 5173** and proxies every `/api/*` request to Express on **port 3002**. Both processes start with a single command.
 
 **Production mode** (`npm start` or Docker): the compiled `dist/` is served as static files by Express on **port 3002** only — one port, one process.
 
 **Key runtime directories** (auto-created, cleaned every 24 h):
+
 - `response/` — exported gateway bundle JSON (`spFolderSVCFull.json`), assertion search results
 - `generated/` — bundle files output by the Find Assertions workflow
 
@@ -109,19 +112,23 @@ Layer7 API Gateway
 
 ### For local development (required by everyone)
 
-| Tool | Version | Notes | Install |
-|------|---------|-------|---------|
-| Node.js | **20.x LTS** (minimum 15.6) | The `X509Certificate` API used to parse cert validity dates requires Node 15.6+. Node 20 LTS is recommended and matches the Docker image. | https://nodejs.org |
-| npm | 10.x+ | Included with Node.js 20 | — |
-| git | Any | — | `brew install git` |
-| graphman-client | Latest from your team | Separate CLI tool — cloned or extracted alongside this repo. Not an npm package. | See Step 2a below |
+
+| Tool            | Version                     | Notes                                                                                                                                     | Install                                  |
+| --------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| Node.js         | **20.x LTS** (minimum 15.6) | The `X509Certificate` API used to parse cert validity dates requires Node 15.6+. Node 20 LTS is recommended and matches the Docker image. | [https://nodejs.org](https://nodejs.org) |
+| npm             | 10.x+                       | Included with Node.js 20                                                                                                                  | —                                        |
+| git             | Any                         | —                                                                                                                                         | `brew install git`                       |
+| graphman-client | Latest from your team       | Separate CLI tool — cloned or extracted alongside this repo. Not an npm package.                                                          | See Step 2a below                        |
+
 
 ### For Docker builds and Kubernetes deployment (only needed later)
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Docker Desktop | 4.x+ | https://docs.docker.com/desktop/mac/ |
-| kubectl | 1.28+ | `brew install kubectl` |
+
+| Tool           | Version | Install                                                                      |
+| -------------- | ------- | ---------------------------------------------------------------------------- |
+| Docker Desktop | 4.x+    | [https://docs.docker.com/desktop/mac/](https://docs.docker.com/desktop/mac/) |
+| kubectl        | 1.28+   | `brew install kubectl`                                                       |
+
 
 ---
 
@@ -129,13 +136,15 @@ Layer7 API Gateway
 
 > **None of the credentials below are stored in this repository. You must obtain and configure them yourself before following the setup steps. Which credentials you need depends on what you are trying to do.**
 
-| # | Credential | Used For | Needed At |
-|---|-----------|----------|-----------|
-| 1 | Broadcom Artifactory npm token | **Docker builds only** — fetches `@layer7/graphman` CLI inside the Dockerfile (Stage 0). **Not required for `npm install` or `npm run dev`** — all npm packages in `package.json` are from the public npmjs registry. | Step 7 (before Docker build) |
-| 2 | Gateway host URL + admin username + password | `auth-config.json` and `config.json` — connects the app to your API Gateway | Step 4 (before `npm run dev`) |
-| 3 | OIDC provider details (discovery URL, client ID) | `auth-config.json` — enables SSO login via your identity provider. Optional for local dev: if you skip OIDC you can still log in with gateway basic auth on the Login page. | Step 4 (before `npm run dev`) |
-| 4 | Docker Hub username + Personal Access Token (PAT) | `scripts/package-image.sh` / `scripts/upgrade-rebuild.sh` — pushes the image to Docker Hub | Step 7 (before Docker build) |
-| 5 | Docker Hub PAT (same or separate read-only) | Kubernetes pull secret — allows the cluster to pull the image | Step 9 (before `kubectl apply`) |
+
+| #   | Credential                                        | Used For                                                                                                                                                                                                              | Needed At                       |
+| --- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| 1   | Broadcom Artifactory npm token                    | **Docker builds only** — fetches `@layer7/graphman` CLI inside the Dockerfile (Stage 0). **Not required for `npm install` or `npm run dev`** — all npm packages in `package.json` are from the public npmjs registry. | Step 7 (before Docker build)    |
+| 2   | Gateway host URL + admin username + password      | `auth-config.json` and `config.json` — connects the app to your API Gateway                                                                                                                                           | Step 4 (before `npm run dev`)   |
+| 3   | OIDC provider details (discovery URL, client ID)  | `auth-config.json` — enables SSO login via your identity provider. Optional for local dev: if you skip OIDC you can still log in with gateway basic auth on the Login page.                                           | Step 4 (before `npm run dev`)   |
+| 4   | Docker Hub username + Personal Access Token (PAT) | `scripts/package-image.sh` / `scripts/upgrade-rebuild.sh` — pushes the image to Docker Hub                                                                                                                            | Step 7 (before Docker build)    |
+| 5   | Docker Hub PAT (same or separate read-only)       | Kubernetes pull secret — allows the cluster to pull the image                                                                                                                                                         | Step 9 (before `kubectl apply`) |
+
 
 ---
 
@@ -147,7 +156,7 @@ Layer7 API Gateway
 >
 > **Alternative (no token):** Use `scripts/package-image.sh --local-graphman /path/to/graphman-client-main` to copy your local graphman-client into the Docker image instead of fetching it from Broadcom's registry.
 
-**How to get it:** Contact your Broadcom account team or open a ticket at https://support.broadcom.com to request an Artifactory API token for `packages.broadcom.com`.
+**How to get it:** Contact your Broadcom account team or open a ticket at [https://support.broadcom.com](https://support.broadcom.com) to request an Artifactory API token for `packages.broadcom.com`.
 
 **Where to put it** (for Docker builds): Add these two lines to `~/.npmrc` on your machine:
 
@@ -165,6 +174,7 @@ Replace `<YOUR_BROADCOM_TOKEN>` with your actual token. This file lives in your 
 **What they are:** The hostname of your Layer7 API Gateway and the OIDC application registration for Gateway Utility.
 
 **How to get them:**
+
 - Gateway host: your API Gateway administrator
 - OIDC discovery URL, client ID: whoever manages your identity provider (PingFederate, Okta, Azure AD, etc.)
 
@@ -213,7 +223,8 @@ These files are committed to the repo with placeholder values. Edit them locally
 **What it is:** A Docker Hub PAT that allows `scripts/package-image.sh` to push the built image to your Docker Hub account.
 
 **How to get it:**
-1. Log in at https://hub.docker.com
+
+1. Log in at [https://hub.docker.com](https://hub.docker.com)
 2. Go to **Account Settings → Security → New Access Token**
 3. Create a token with **Read & Write** scope
 
@@ -266,6 +277,7 @@ The application also needs to know how to connect to your gateway from inside th
 Work through this list in order. The first block covers local development; the second block covers Docker and Kubernetes.
 
 **Local development (everyone starts here)**
+
 ```
 [ ] Step 1  — Repository cloned
 [ ] Step 2  — Node.js 20.x verified: node --version → v20.x.x
@@ -279,6 +291,7 @@ Work through this list in order. The first block covers local development; the s
 ```
 
 **Docker image build and Kubernetes deployment (do after local dev is working)**
+
 ```
 [ ] Cred 1  — Broadcom npm token added to ~/.npmrc (OR use --local-graphman mode instead)
 [ ] Cred 4  — docker login docker.io completed
@@ -309,7 +322,7 @@ node --version   # Must be v15.6 or higher; v20.x LTS recommended
 npm --version    # Must be 10.x or higher
 ```
 
-If Node.js is not installed, download v20.x LTS from https://nodejs.org.
+If Node.js is not installed, download v20.x LTS from [https://nodejs.org](https://nodejs.org).
 
 ---
 
@@ -407,6 +420,7 @@ npm install
 This installs all frontend and backend npm packages (React, Vite, TypeScript, Express, etc.) from the public npmjs registry. No Broadcom token is required. The install typically takes 30–60 seconds.
 
 **Verify:**
+
 ```bash
 ls node_modules | head -5
 # Should list package directories (cors, express, react, ...)
@@ -474,10 +488,12 @@ npm run dev
 ```
 
 This starts two processes concurrently:
-- **Vite** (React dev server) on **http://localhost:5173** with hot-module replacement
-- **Express API server** (`server.js`) on **http://localhost:3002** — auto-restarts on file changes via nodemon
+
+- **Vite** (React dev server) on **[http://localhost:5173](http://localhost:5173)** with hot-module replacement
+- **Express API server** (`server.js`) on **[http://localhost:3002](http://localhost:3002)** — auto-restarts on file changes via nodemon
 
 **Expected output:**
+
 ```
 [0] Gateway Utility API server running at http://localhost:3002
 [1]   VITE v5.x.x  ready in XXXms
@@ -486,7 +502,7 @@ This starts two processes concurrently:
 
 ### Open the application
 
-1. Navigate to **http://localhost:5173** in your browser.
+1. Navigate to **[http://localhost:5173](http://localhost:5173)** in your browser.
 2. You are redirected to the **Login** page (`/login`).
 3. Enter your gateway credentials (username + password) — or click **Login with SSO** if OIDC is configured.
 4. On successful login you land on the **Dashboard** with all tools available.
@@ -504,12 +520,14 @@ In the app, go to **App Config → Test** (or use Graphman Version page) to conf
 
 ### Rebuilding after code changes
 
-| Change type | What to run |
-|-------------|-------------|
-| React/TypeScript source (`src/`) | Nothing — Vite hot-reloads automatically |
-| `server.js` | Nothing — nodemon restarts automatically |
-| Added/removed npm package | `npm install` then restart `npm run dev` |
-| TypeScript compile errors | Fix them; Vite will show errors in the browser |
+
+| Change type                      | What to run                                    |
+| -------------------------------- | ---------------------------------------------- |
+| React/TypeScript source (`src/`) | Nothing — Vite hot-reloads automatically       |
+| `server.js`                      | Nothing — nodemon restarts automatically       |
+| Added/removed npm package        | `npm install` then restart `npm run dev`       |
+| TypeScript compile errors        | Fix them; Vite will show errors in the browser |
+
 
 ---
 
@@ -528,6 +546,7 @@ npm run build
 ```
 
 **Verify:**
+
 ```bash
 ls dist/
 # Expected: index.html  assets/
@@ -663,17 +682,19 @@ git push origin v1.0.1
 
 ## What NOT to Commit
 
-| File / Folder | Reason |
-|---------------|--------|
-| `node_modules/` | Hundreds of MB; regenerated with `npm install` |
-| `dist/` | Compiled output; regenerated with `npm run build` |
-| `k8s/secret.yaml` | Contains real gateway usernames and passwords |
-| `k8s/docker-registry-secret.yaml` | Contains real Docker Hub Personal Access Token |
+
+| File / Folder                      | Reason                                             |
+| ---------------------------------- | -------------------------------------------------- |
+| `node_modules/`                    | Hundreds of MB; regenerated with `npm install`     |
+| `dist/`                            | Compiled output; regenerated with `npm run build`  |
+| `k8s/secret.yaml`                  | Contains real gateway usernames and passwords      |
+| `k8s/docker-registry-secret.yaml`  | Contains real Docker Hub Personal Access Token     |
 | `auth-config.json` (after editing) | Contains real gateway URLs — only safe as template |
-| `response/` | Runtime data files |
-| `generated/` | Runtime generated files |
-| `*.configuration` | graphman credential files |
-| `scripts/vendor/*.tgz` | Downloaded package tarballs |
+| `response/`                        | Runtime data files                                 |
+| `generated/`                       | Runtime generated files                            |
+| `*.configuration`                  | graphman credential files                          |
+| `scripts/vendor/*.tgz`             | Downloaded package tarballs                        |
+
 
 All of the above are already covered by `.gitignore`.
 
@@ -681,32 +702,36 @@ All of the above are already covered by `.gitignore`.
 
 ## Secrets Summary
 
-| Secret | Where It Lives | Template Provided | Applied Via |
-|--------|---------------|-------------------|-------------|
-| Broadcom npm token | `~/.npmrc` on developer machine | See Credential 1 above | File on local machine |
-| Gateway host + OIDC config | `auth-config.json`, `config.json` | Already in repo (edit placeholders) | Local file, never committed |
-| Docker Hub PAT (push) | `docker login` on developer machine | See Credential 4 above | `docker login` |
-| Docker Hub PAT (pull) | Kubernetes Secret | `k8s/docker-registry-secret.yaml.template` | `kubectl create secret` |
-| Graphman gateway credentials | Kubernetes Secret | `k8s/secret.yaml.template` | `kubectl apply` |
-| Express session signing key | Kubernetes Secret | `k8s/session-secret.yaml` (placeholder) | `kubectl create secret` |
+
+| Secret                       | Where It Lives                      | Template Provided                          | Applied Via                 |
+| ---------------------------- | ----------------------------------- | ------------------------------------------ | --------------------------- |
+| Broadcom npm token           | `~/.npmrc` on developer machine     | See Credential 1 above                     | File on local machine       |
+| Gateway host + OIDC config   | `auth-config.json`, `config.json`   | Already in repo (edit placeholders)        | Local file, never committed |
+| Docker Hub PAT (push)        | `docker login` on developer machine | See Credential 4 above                     | `docker login`              |
+| Docker Hub PAT (pull)        | Kubernetes Secret                   | `k8s/docker-registry-secret.yaml.template` | `kubectl create secret`     |
+| Graphman gateway credentials | Kubernetes Secret                   | `k8s/secret.yaml.template`                 | `kubectl apply`             |
+| Express session signing key  | Kubernetes Secret                   | `k8s/session-secret.yaml` (placeholder)    | `kubectl create secret`     |
+
 
 ---
 
 ## Quick Reference
 
-| Task | Command |
-|------|---------|
-| Install dependencies | `npm install` |
-| Start local dev server (hot reload) | `./scripts/dev-server.sh` |
-| Start production server locally | `./scripts/prod-server.sh` |
-| Kill dev server processes | `./scripts/kill-server.sh` |
-| Build React frontend (before Docker) | `npm run build` |
-| Full Docker build + push + rollout | `./scripts/upgrade-rebuild.sh` |
-| Docker build + push (manual) | `./scripts/package-image.sh --npm-token "$TOKEN" --registry docker.io/<user> --push` |
+
+| Task                                    | Command                                                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Install dependencies                    | `npm install`                                                                                               |
+| Start local dev server (hot reload)     | `./scripts/dev-server.sh`                                                                                   |
+| Start production server locally         | `./scripts/prod-server.sh`                                                                                  |
+| Kill dev server processes               | `./scripts/kill-server.sh`                                                                                  |
+| Build React frontend (before Docker)    | `npm run build`                                                                                             |
+| Full Docker build + push + rollout      | `./scripts/upgrade-rebuild.sh`                                                                              |
+| Docker build + push (manual)            | `./scripts/package-image.sh --npm-token "$TOKEN" --registry docker.io/<user> --push`                        |
 | Docker build (local graphman, no token) | `./scripts/package-image.sh --local-graphman ../../graphman-client-main --registry docker.io/<user> --push` |
-| Validate packages (offline prep) | `./scripts/validate-packages.sh` |
-| Download packages for offline builds | `./scripts/download-vendor.sh` |
-| Build from vendored packages | `./scripts/build-from-vendor.sh` |
+| Validate packages (offline prep)        | `./scripts/validate-packages.sh`                                                                            |
+| Download packages for offline builds    | `./scripts/download-vendor.sh`                                                                              |
+| Build from vendored packages            | `./scripts/build-from-vendor.sh`                                                                            |
+
 
 ---
 
@@ -714,9 +739,12 @@ All of the above are already covered by `.gitignore`.
 
 All documentation lives in `docs/`. `README.md` (this file) is the entry point.
 
-| Document | What it covers |
-|----------|---------------|
-| [docs/Local-Env-Testing.md](./docs/Local-Env-Testing.md) | All UI pages and routes, full API endpoint catalogue, application architecture, local prerequisites |
-| [docs/Rebuild-Guide.md](./docs/Rebuild-Guide.md) | Day-to-day rebuild pre-flight checks, step-by-step rebuild, local Docker test, build troubleshooting, technology stack, npm package inventory |
-| [docs/Deployment-Guide.md](./docs/Deployment-Guide.md) | First-time Docker build (all package-image.sh modes), complete 15-step Kubernetes deployment, Envoy Gateway setup, secrets, HTTPRoutes, scaling, K8s troubleshooting |
-| [scripts/README.md](./scripts/README.md) | Package validation and vendor workflow for air-gapped / offline builds |
+
+| Document                                                 | What it covers                                                                                                                                                       |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [docs/Local-Env-Testing.md](./docs/Local-Env-Testing.md) | All UI pages and routes, full API endpoint catalogue, application architecture, local prerequisites                                                                  |
+| [docs/Rebuild-Guide.md](./docs/Rebuild-Guide.md)         | Day-to-day rebuild pre-flight checks, step-by-step rebuild, local Docker test, build troubleshooting, technology stack, npm package inventory                        |
+| [docs/Deployment-Guide.md](./docs/Deployment-Guide.md)   | First-time Docker build (all package-image.sh modes), complete 15-step Kubernetes deployment, Envoy Gateway setup, secrets, HTTPRoutes, scaling, K8s troubleshooting |
+| [scripts/README.md](./scripts/README.md)                 | Package validation and vendor workflow for air-gapped / offline builds                                                                                               |
+
+

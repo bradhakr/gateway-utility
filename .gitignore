@@ -40,6 +40,7 @@ scripts/validation-report.txt
 # ── Docs excluded from version control ───────────────────────────────────────
 docs/Config-Write-Options.md
 docs/GitHub-Repo-Guide.md
+docs/Config-Management-Options.md
 
 # ── OS / editor artefacts ─────────────────────────────────────────────────────
 .DS_Store

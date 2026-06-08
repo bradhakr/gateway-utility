@@ -22,6 +22,8 @@ interface OidcConfig {
   scopes:                       string
   sessionMaxAgeSeconds:         number
   introspectionIntervalSeconds: number
+  pkceEnabled:                  boolean
+  tokenEndpointAuthMethod:      'client_secret_post' | 'client_secret_basic' | 'none'
 }
 
 interface DiscoveredDoc {
@@ -153,6 +155,8 @@ export default function AuthSetup() {
     redirectUri: '', postLogoutRedirectUri: '',
     scopes: 'openid profile email',
     sessionMaxAgeSeconds: 3600, introspectionIntervalSeconds: 300,
+    pkceEnabled: true,
+    tokenEndpointAuthMethod: 'client_secret_post',
   })
   const [oidcSaving, setOidcSaving] = useState(false)
   const [oidcMsg, setOidcMsg] = useState({ ok: true, text: '' })
@@ -176,6 +180,8 @@ export default function AuthSetup() {
           scopes:                       d.oidc.scopes || 'openid profile email',
           sessionMaxAgeSeconds:         d.oidc.sessionMaxAgeSeconds || 3600,
           introspectionIntervalSeconds: d.oidc.introspectionIntervalSeconds || 300,
+          pkceEnabled:                  d.oidc.pkceEnabled !== false,
+          tokenEndpointAuthMethod:      d.oidc.tokenEndpointAuthMethod || 'client_secret_post',
         }))
       })
       .catch(() => {})
@@ -574,13 +580,96 @@ export default function AuthSetup() {
                      type="password"
                      placeholder="Leave empty for public client (PKCE only)"
                      hint="Required for introspection endpoint auth. Empty = public client." />
+
+              {/* Token endpoint auth method */}
+              <div style={{ marginTop: '4px' }}>
+                <label style={labelSt}>Token Endpoint Auth Method</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                  {(
+                    [
+                      { value: 'client_secret_post',  label: 'client_secret_post',  desc: 'client_id + client_secret sent in POST body (RFC 6749 default)' },
+                      { value: 'client_secret_basic', label: 'client_secret_basic', desc: 'Authorization: Basic base64(client_id:client_secret) header — required by many enterprise IDPs (CA SSO, Ping, Okta)' },
+                      { value: 'none',                label: 'none',                desc: 'Public client — only client_id in body, no secret (PKCE-only flows)' },
+                    ] as { value: OidcConfig['tokenEndpointAuthMethod']; label: string; desc: string }[]
+                  ).map(opt => (
+                    <label key={opt.value} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="tokenEndpointAuthMethod"
+                        value={opt.value}
+                        checked={oidc.tokenEndpointAuthMethod === opt.value}
+                        onChange={() => setOidc(o => ({ ...o, tokenEndpointAuthMethod: opt.value }))}
+                        style={{ marginTop: '2px', accentColor: PAGE_COLOR, flexShrink: 0 }}
+                      />
+                      <span>
+                        <code style={{ fontFamily: 'monospace', fontSize: '12px', fontWeight: 700, color: oidc.tokenEndpointAuthMethod === opt.value ? PAGE_COLOR : 'var(--color-text-primary)' }}>
+                          {opt.label}
+                        </code>
+                        <span style={{ ...hintSt, display: 'block', marginTop: '1px' }}>{opt.desc}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <Field label="Redirect URI"
                    value={oidc.redirectUri}
                    onChange={v => setOidc(o => ({ ...o, redirectUri: v }))}
                    placeholder={`${window.location.origin}/auth/callback`}
-                   hint="Must match exactly what is registered in IDSP. This app's callback: /auth/callback" />
+                   hint="Must match exactly what is registered in IDSP. Must also be registered in the IDSP client." />
+
+            {/* Suggested Redirect URI helper */}
+            <div style={{ marginBottom: '16px', padding: '10px 14px', borderRadius: '7px', background: 'rgba(8,145,178,0.08)', border: '1px solid rgba(8,145,178,0.25)', fontSize: '12px', lineHeight: 1.7, color: 'var(--color-text-secondary)' }}>
+              <span style={{ fontWeight: 700, color: 'var(--color-text-primary)' }}>Suggested Redirect URI for this app: </span>
+              <code
+                style={{ fontFamily: 'monospace', fontSize: '11.5px', color: '#0891b2', cursor: 'pointer', wordBreak: 'break-all' }}
+                title="Click to copy"
+                onClick={() => navigator.clipboard.writeText(`${window.location.origin}/auth/callback`)}
+              >
+                {window.location.origin}/auth/callback
+              </code>
+              {' '}
+              <span style={{ opacity: 0.7 }}>(click to copy)</span>
+              <div style={{ marginTop: '5px' }}>
+                Set this as the Redirect URI <strong>and</strong> register it in the IDSP client to let this app
+                handle the OIDC callback directly (recommended). If the redirect URI points to a different
+                server (e.g. an API Gateway), disable PKCE below so that server can exchange the code
+                without a <code style={{ fontFamily: 'monospace', fontSize: '11px' }}>code_verifier</code>.
+              </div>
+            </div>
+
+            {/* PKCE toggle */}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={labelSt}>PKCE (Proof Key for Code Exchange)</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <button
+                  type="button"
+                  onClick={() => setOidc(o => ({ ...o, pkceEnabled: !o.pkceEnabled }))}
+                  style={{
+                    position: 'relative', width: '44px', height: '24px', borderRadius: '12px',
+                    border: 'none', cursor: 'pointer', padding: 0, flexShrink: 0,
+                    background: oidc.pkceEnabled ? '#0891b2' : '#6b7280',
+                    transition: 'background 0.2s',
+                  }}
+                >
+                  <span style={{
+                    position: 'absolute', top: '3px',
+                    left: oidc.pkceEnabled ? '23px' : '3px',
+                    width: '18px', height: '18px', borderRadius: '50%',
+                    background: '#fff', transition: 'left 0.2s',
+                  }} />
+                </button>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                  {oidc.pkceEnabled ? 'Enabled (recommended)' : 'Disabled'}
+                </span>
+              </div>
+              <p style={{ ...hintSt, marginTop: '6px' }}>
+                {oidc.pkceEnabled
+                  ? 'The /authorize call includes code_challenge (S256). The BFF token exchange supplies code_verifier. Only works when Redirect URI points to this app.'
+                  : 'The /authorize call sends no code_challenge. Use this when the Redirect URI points to an intermediary server (e.g. API Gateway) that calls the token endpoint without a code_verifier.'}
+              </p>
+            </div>
 
             <Field label="Post-Logout Redirect URI"
                    value={oidc.postLogoutRedirectUri}

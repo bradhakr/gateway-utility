@@ -38,12 +38,12 @@ data:
         "logoffUrl": "https://ssggw.vks.security.broadcom.com/rest/gu/logoff"
       },
       "oidc": {
-        "discoveryUrl":                 "https://your-idsp-host/default/.well-known/openid-configuration",
-        "clientId":                     "your-oidc-client-id",
-        "clientSecret":                 "",
-        "redirectUri":                  "https://your-app-fqdn/auth/callback",
-        "postLogoutRedirectUri":        "https://your-app-fqdn/login",
-        "scopes":                       "openid profile email",
+        "discoveryUrl":                 "https://idsp.vks.security.broadcom.com/default/.well-known/openid-configuration",
+        "clientId":                     "4aa58d46-99a3-4c72-8686-764d770c4dcc",
+        "clientSecret":                 "82534cea-30b9-4886-b689-700ccef32c61",
+        "redirectUri":                  "https://gu-dev.vks.security.broadcom.com/auth/callback",
+        "postLogoutRedirectUri":        "https://gu-dev.vks.security.broadcom.com/login",
+        "scopes":                       "openid",
         "sessionMaxAgeSeconds":         3600,
         "introspectionIntervalSeconds": 300
       }
