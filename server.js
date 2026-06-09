@@ -2548,9 +2548,10 @@ app.post('/api/repo-sync/push-to-github', async (req, res) => {
       continue;
     }
 
-    const content = fs.readFileSync(absPath);
-    const b64     = content.toString('base64');
-    const apiPath = `/repos/${repo.owner}/${repo.repo}/contents/${safe}`;
+    const content     = fs.readFileSync(absPath);
+    const b64         = content.toString('base64');
+    const encodedPath = safe.split('/').map(p => encodeURIComponent(p)).join('/');
+    const apiPath     = `/repos/${repo.owner}/${repo.repo}/contents/${encodedPath}`;
 
     try {
       // Check if file already exists to get its SHA (required for updates)
@@ -2670,7 +2671,8 @@ app.post('/api/repo-sync/pull-and-import', async (req, res) => {
   for (const filePath of selectedPaths) {
     const safe = path.normalize(filePath).replace(/^(\.\.[/\\])+/, '');
     try {
-      const resp = await githubRequest('GET', `/repos/${repo.owner}/${repo.repo}/contents/${encodeURIComponent(safe)}?ref=${encodeURIComponent(targetBranch)}`, repo.pat);
+      const encodedFilePath = safe.split('/').map(p => encodeURIComponent(p)).join('/');
+      const resp = await githubRequest('GET', `/repos/${repo.owner}/${repo.repo}/contents/${encodedFilePath}?ref=${encodeURIComponent(targetBranch)}`, repo.pat);
       if (resp.status !== 200) {
         downloadResults.push({ path: filePath, success: false, error: resp.body?.message || `HTTP ${resp.status}` });
         continue;
