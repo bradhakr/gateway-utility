@@ -4,43 +4,63 @@ import { useAuth } from '../context/AuthContext'
 
 type Status = 'processing' | 'error'
 
+// Rendering context — determined once at module load time.
+//   popup  — opened via window.open() by the login page
+//   iframe — embedded inside the login page (only if IDSP allows framing)
+//   direct — full-page redirect (popup blocked fallback)
+const inPopup  = !!(window.opener && !window.opener.closed)
+const inIframe = !inPopup && window.parent !== window
+
 export default function OidcCallback() {
-  const [searchParams]    = useSearchParams()
+  const [searchParams]      = useSearchParams()
   const [status, setStatus] = useState<Status>('processing')
   const [errorMsg, setErrorMsg] = useState('')
   const { oidcLogin } = useAuth()
   const navigate = useNavigate()
 
   useEffect(() => {
-    const code  = searchParams.get('code')
-    const state = searchParams.get('state')
-    const error = searchParams.get('error')
+    const code      = searchParams.get('code')
+    const state     = searchParams.get('state')
+    const error     = searchParams.get('error')
     const errorDesc = searchParams.get('error_description')
 
-    // IDP returned an error (e.g. access_denied)
+    function signalParent(type: 'oidc-success' | 'oidc-error', payload: Record<string, string>) {
+      const msg = { type, ...payload }
+      if (inPopup) {
+        window.opener.postMessage(msg, window.location.origin)
+        window.close()
+      } else {
+        // iframe
+        window.parent.postMessage(msg, window.location.origin)
+      }
+    }
+
     if (error) {
-      setErrorMsg(`IDSP error: ${error}${errorDesc ? ` — ${errorDesc}` : ''}`)
-      setStatus('error')
+      const msg = `IDSP error: ${error}${errorDesc ? ` — ${errorDesc}` : ''}`
+      if (inPopup || inIframe) {
+        signalParent('oidc-error', { message: msg })
+      } else {
+        setErrorMsg(msg)
+        setStatus('error')
+      }
       return
     }
 
     if (!code || !state) {
-      setErrorMsg('Missing code or state in callback URL. The OIDC flow may have been interrupted.')
-      setStatus('error')
+      const msg = 'Missing code or state in callback URL. The OIDC flow may have been interrupted.'
+      if (inPopup || inIframe) {
+        signalParent('oidc-error', { message: msg })
+      } else {
+        setErrorMsg(msg)
+        setStatus('error')
+      }
       return
     }
 
-    // Determine rendering context:
-    //   popup  — opened as a separate browser window (primary path)
-    //   direct — full-page redirect (popup-blocked fallback)
-    const inPopup = !!(window.opener && !window.opener.closed)
-
-    function signalParent(type: 'oidc-success' | 'oidc-error', payload: Record<string, string>) {
-      window.opener.postMessage({ type, ...payload }, window.location.origin)
-      window.close()
-    }
-
-    // Exchange authorization code for tokens via the BFF backend
+    // Exchange the authorization code for tokens via the BFF backend.
+    // The server looks up the pending flow by the `state` value in
+    // oidcPendingStore, so this works from any rendering context without
+    // relying on session-cookie visibility.
     fetch('/api/auth/token-exchange', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -49,17 +69,15 @@ export default function OidcCallback() {
       .then(r => r.json())
       .then(d => {
         if (d.success) {
-          if (inPopup) {
-            // Running in OIDC popup — signal the parent login page and close
+          if (inPopup || inIframe) {
             signalParent('oidc-success', { username: d.username || '', email: d.email || '' })
           } else {
-            // Direct full-page navigation (popup-blocked fallback) — normal flow
             oidcLogin(d.username, d.email || '')
             navigate('/dashboard', { replace: true })
           }
         } else {
           const msg = d.error || 'Token exchange failed.'
-          if (inPopup) {
+          if (inPopup || inIframe) {
             signalParent('oidc-error', { message: msg })
           } else {
             setErrorMsg(msg)
@@ -69,7 +87,7 @@ export default function OidcCallback() {
       })
       .catch(e => {
         const msg = `Network error during token exchange: ${String(e)}`
-        if (inPopup) {
+        if (inPopup || inIframe) {
           signalParent('oidc-error', { message: msg })
         } else {
           setErrorMsg(msg)
@@ -79,6 +97,33 @@ export default function OidcCallback() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // ── Popup / iframe: minimal spinner — parent handles navigation ───────────
+  if (inPopup || inIframe) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: 'var(--color-content-bg)',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+      }}>
+        <div style={{
+          width: '40px', height: '40px',
+          border: '3px solid #E5E7EB', borderTopColor: '#CC0000',
+          borderRadius: '50%', animation: 'spin 0.8s linear infinite',
+          marginBottom: '14px',
+        }} />
+        <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: '6px' }}>
+          Completing sign-in…
+        </div>
+        <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+          Exchanging authorization code with IDSP
+        </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
+  // ── Direct full-page redirect: full card UI ───────────────────────────────
   return (
     <div style={{
       minHeight: '100vh',
