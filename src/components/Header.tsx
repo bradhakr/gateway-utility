@@ -27,6 +27,7 @@ const TOOL_LINKS = [
   { path: '/entity-forge',           label: 'Entity Forge',       icon: '⚒'  },
   { path: '/entity-browser',         label: 'Entity Browser',     icon: '🔎' },
   { path: '/new-entity',             label: 'Bundle Import',      icon: '📦' },
+  { path: '/repo-syncup',            label: 'Repository SyncUp',  icon: '🔄' },
 ]
 
 // ─── Shared drop-down menu wrapper ───────────────────────────────────────────
@@ -202,6 +203,7 @@ export default function Header() {
                 <MenuItem icon="⚙" label="App Config"      onClick={() => { configDrop.setOpen(false); navigate('/configuration') }} />
                 <MenuItem icon="🔗" label="Graphman Config" onClick={() => { configDrop.setOpen(false); navigate('/graphman-config') }} />
                 <MenuItem icon="🔒" label="Auth Config"      onClick={() => { configDrop.setOpen(false); navigate('/auth-setup') }} />
+                <MenuItem icon="🐙" label="GitHub Config"   onClick={() => { configDrop.setOpen(false); navigate('/github-config') }} />
               </DropdownMenu>
             </div>
 
