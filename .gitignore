@@ -28,6 +28,9 @@ k8s/docker-registry-secret.yaml
 graphman.configuration
 *.configuration
 
+# GitHub repository config (contains PATs — store locally only)
+github-repos.json
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Vendor package downloads (regenerated with: ./scripts/download-vendor.sh) ─
