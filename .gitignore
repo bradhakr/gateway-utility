@@ -37,6 +37,9 @@ github-repos.json
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Personal / local-only scripts ────────────────────────────────────────────
+scripts/git-workflow.sh
+
 # ── Vendor package downloads (regenerated with: ./scripts/download-vendor.sh) ─
 scripts/vendor/*.tgz
 scripts/vendor/manifest.json
