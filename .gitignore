@@ -24,6 +24,10 @@ k8s/secret.yaml
 # Use k8s/docker-registry-secret.yaml.template to regenerate
 k8s/docker-registry-secret.yaml
 
+# GitHub repos Kubernetes secret (contains PATs)
+# Use k8s/github-repos-secret.yaml.template — fill in values locally, apply with kubectl
+k8s/github-repos-secret.yaml
+
 # graphman configuration files (contain gateway credentials)
 graphman.configuration
 *.configuration

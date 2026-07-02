@@ -2315,6 +2315,19 @@ function saveGithubRepos(data) {
   fs.writeFileSync(GITHUB_REPOS_FILE, JSON.stringify(data, null, 2), 'utf8');
 }
 
+// Trim all string fields so stray whitespace in the config never breaks API paths.
+// e.g. " DevRepository" → "DevRepository"
+function normalizeRepo(r) {
+  return {
+    ...r,
+    name:   (r.name   || '').trim(),
+    owner:  (r.owner  || '').trim(),
+    repo:   (r.repo   || '').trim(),
+    branch: (r.branch || '').trim(),
+    pat:    (r.pat    || '').trim(),
+  };
+}
+
 app.get('/api/github-repos', (_req, res) => {
   const cfg = loadGithubRepos();
   // Mask PATs before sending to the browser
@@ -2350,13 +2363,18 @@ app.post('/api/github-repos-save', (req, res) => {
 // ─── Repository SyncUp ────────────────────────────────────────────────────────
 
 // Helper: GitHub REST API call (server-side only, using PAT)
-function githubRequest(method, path, pat, body) {
+function githubRequest(method, apiPath, pat, body) {
   return new Promise((resolve, reject) => {
     const bodyStr = body ? JSON.stringify(body) : null;
+    // Use new URL() to parse and normalise the path — encodes any characters that
+    // would trigger ERR_UNESCAPED_CHARACTERS, without double-encoding already-%XX
+    // sequences.  Extract pathname+search so we can pass an explicit opts.path to
+    // https.request, which keeps the request fully under our control.
+    const parsed = new URL(`https://api.github.com${apiPath}`);
     const opts = {
-      hostname: 'api.github.com',
-      port: 443,
-      path,
+      hostname: parsed.hostname,
+      port:     443,
+      path:     parsed.pathname + parsed.search,
       method,
       headers: {
         'Authorization': `Bearer ${pat}`,
@@ -2523,8 +2541,9 @@ app.post('/api/repo-sync/push-to-github', async (req, res) => {
   }
 
   const cfg = loadGithubRepos();
-  const repo = (cfg.repositories || []).find(r => r.name === repoName);
-  if (!repo) return res.status(404).json({ success: false, error: `Repository "${repoName}" not found in configuration.` });
+  const repoRaw = (cfg.repositories || []).find(r => r.name === repoName);
+  if (!repoRaw) return res.status(404).json({ success: false, error: `Repository "${repoName}" not found in configuration.` });
+  const repo = normalizeRepo(repoRaw);  // trim whitespace from owner/repo/branch/pat
 
   const explodeDir = path.join(RESPONSE_DIR, tmpId, 'exploded');
   if (!fs.existsSync(explodeDir)) {
@@ -2535,16 +2554,41 @@ app.post('/api/repo-sync/push-to-github', async (req, res) => {
   const msg          = commitMessage || `Gateway SyncUp — ${new Date().toISOString()}`;
   const results      = [];
 
+  // ── Pre-flight: confirm the target branch exists before touching any files ──
+  // GitHub returns 404 "Not Found" on PUT /contents/{path} when the branch is
+  // missing — without this check that 404 shows up cryptically on every file.
+  try {
+    const branchCheck = await githubRequest(
+      'GET',
+      `/repos/${repo.owner}/${repo.repo}/branches/${encodeURIComponent(targetBranch)}`,
+      repo.pat
+    );
+    if (branchCheck.status !== 200) {
+      try { fs.rmSync(path.join(RESPONSE_DIR, tmpId), { recursive: true, force: true }); } catch (_) {}
+      const emptyRepoHint = branchCheck.status === 404
+        ? ` If "${repo.owner}/${repo.repo}" is a new empty repository, make an initial commit (e.g. add a README) to create the default branch first.`
+        : '';
+      return res.status(422).json({
+        success: false,
+        error: `Branch "${targetBranch}" was not found in ${repo.owner}/${repo.repo}.${emptyRepoHint} Check the branch name in the commit step.`,
+        detail: `GitHub returned HTTP ${branchCheck.status}: ${branchCheck.body?.message || 'Unknown error'}`,
+      });
+    }
+  } catch (branchErr) {
+    try { fs.rmSync(path.join(RESPONSE_DIR, tmpId), { recursive: true, force: true }); } catch (_) {}
+    return res.status(500).json({ success: false, error: `Could not verify branch "${targetBranch}": ${String(branchErr)}` });
+  }
+
   for (const relPath of selectedFiles) {
-    // Prevent path traversal
-    const safe = path.normalize(relPath).replace(/^(\.\.[/\\])+/, '');
+    // Prevent path traversal — require resolved path to stay inside explodeDir
+    const safe    = path.normalize(relPath).replace(/^(\.\.[/\\])+/, '');
     const absPath = path.join(explodeDir, safe);
-    if (!absPath.startsWith(explodeDir)) {
-      results.push({ relPath, success: false, error: 'Path traversal rejected.' });
+    if (!absPath.startsWith(explodeDir + path.sep) && absPath !== explodeDir) {
+      results.push({ relPath, success: false, action: 'failed', error: 'Path traversal rejected.' });
       continue;
     }
     if (!fs.existsSync(absPath)) {
-      results.push({ relPath, success: false, error: 'File not found in explode output.' });
+      results.push({ relPath, success: false, action: 'failed', error: 'File not found in explode output.' });
       continue;
     }
 
@@ -2562,12 +2606,13 @@ app.post('/api/repo-sync/push-to-github', async (req, res) => {
       const putResp = await githubRequest('PUT', apiPath, repo.pat, putBody);
 
       if (putResp.status === 200 || putResp.status === 201) {
-        results.push({ relPath, success: true });
+        results.push({ relPath, success: true, action: putResp.status === 201 ? 'created' : 'updated' });
       } else {
-        results.push({ relPath, success: false, error: putResp.body?.message || `HTTP ${putResp.status}` });
+        console.error(`[repo-sync] push failed for "${relPath}": HTTP ${putResp.status}`, putResp.body);
+        results.push({ relPath, success: false, action: 'failed', error: `HTTP ${putResp.status} — ${putResp.body?.message || 'Unknown error'}` });
       }
     } catch (e) {
-      results.push({ relPath, success: false, error: String(e) });
+      results.push({ relPath, success: false, action: 'failed', error: String(e) });
     }
   }
 
@@ -2586,8 +2631,9 @@ app.post('/api/repo-sync/list-repo-contents', async (req, res) => {
   if (!repoName) return res.status(400).json({ success: false, error: 'repoName is required.' });
 
   const cfg = loadGithubRepos();
-  const repo = (cfg.repositories || []).find(r => r.name === repoName);
-  if (!repo) return res.status(404).json({ success: false, error: `Repository "${repoName}" not found in configuration.` });
+  const repoRaw = (cfg.repositories || []).find(r => r.name === repoName);
+  if (!repoRaw) return res.status(404).json({ success: false, error: `Repository "${repoName}" not found in configuration.` });
+  const repo = normalizeRepo(repoRaw);  // trim whitespace from owner/repo/branch/pat
 
   const targetBranch = branch || repo.branch || 'main';
 
@@ -2646,8 +2692,9 @@ app.post('/api/repo-sync/pull-and-import', async (req, res) => {
   }
 
   const cfg = loadGithubRepos();
-  const repo = (cfg.repositories || []).find(r => r.name === repoName);
-  if (!repo) return res.status(404).json({ success: false, error: `Repository "${repoName}" not found in configuration.` });
+  const repoRaw = (cfg.repositories || []).find(r => r.name === repoName);
+  if (!repoRaw) return res.status(404).json({ success: false, error: `Repository "${repoName}" not found in configuration.` });
+  const repo = normalizeRepo(repoRaw);  // trim whitespace from owner/repo/branch/pat
 
   const config      = loadConfig();
   const graphmanHome   = path.resolve(SCRIPTS_DIR, config.graphmanHome || '../../graphman-client-main');
@@ -2674,7 +2721,7 @@ app.post('/api/repo-sync/pull-and-import', async (req, res) => {
       const encodedFilePath = safe.split('/').map(p => encodeURIComponent(p)).join('/');
       const resp = await githubRequest('GET', `/repos/${repo.owner}/${repo.repo}/contents/${encodedFilePath}?ref=${encodeURIComponent(targetBranch)}`, repo.pat);
       if (resp.status !== 200) {
-        downloadResults.push({ path: filePath, success: false, error: resp.body?.message || `HTTP ${resp.status}` });
+        downloadResults.push({ path: filePath, success: false, error: `HTTP ${resp.status} — ${resp.body?.message || 'Unknown error'}` });
         continue;
       }
       const content = Buffer.from(resp.body.content.replace(/\n/g, ''), 'base64');

@@ -17,7 +17,7 @@ GatewayUtility/
 │   ├── context/                 # AuthContext — OIDC BFF session state
 │   ├── components/              # Layout, Header, Sidebar, Footer, NavigationBlocker
 │   ├── hooks/                   # Shared hooks — useDirtyGuard (unsaved-changes navigation guard)
-│   └── pages/                   # All UI pages (15 pages)
+│   └── pages/                   # All UI pages (17 pages)
 ├── index.html                   # Vite HTML entry template
 ├── public/                      # Static assets (broadcom.png, favicon)
 ├── server.js                    # Express backend — API server + OIDC BFF
@@ -41,7 +41,8 @@ GatewayUtility/
 │   ├── namespace.yaml           # Namespace definitions
 │   ├── ingress.yaml             # Ingress rules
 │   ├── session-secret.yaml      # Session signing key placeholder
-│   ├── secret.yaml.template     # Graphman credentials template — copy → secret.yaml
+│   ├── secret.yaml.template                   # Graphman credentials template — copy → secret.yaml
+│   ├── github-repos-secret.yaml.template      # GitHub repos/PAT template (optional) — copy → github-repos-secret.yaml
 │   ├── docker-registry-secret.yaml.template  # Registry pull secret template
 │   └── envoy-gateway/           # Envoy Gateway HTTPRoute and ReferenceGrant configs
 └── scripts/                     # All operator scripts (see scripts/README.md)
@@ -56,7 +57,7 @@ GatewayUtility/
     └── README.md                # All scripts reference documentation
 ```
 
-> **Not in this repo (gitignored):** `node_modules/`, `dist/`, `k8s/secret.yaml`, `k8s/docker-registry-secret.yaml`, `response/`, `generated/`
+> **Not in this repo (gitignored):** `node_modules/`, `dist/`, `k8s/secret.yaml`, `k8s/docker-registry-secret.yaml`, `k8s/github-repos-secret.yaml`, `response/`, `generated/`, `github-repos.json`
 
 ---
 
@@ -74,6 +75,7 @@ Express BFF — server.js  (port 3002)
     ├── Reads: config.json          (app settings — gateway names, schema versions)
     ├── Reads: auth-config.json     (login URL, OIDC client settings)
     ├── Reads: graphman.configuration  (gateway addresses and credentials)
+    ├── Reads: github-repos.json      (GitHub repo list with PATs — gitignored)
     │
     ├── Handles: basic-auth login proxy, OIDC PKCE flow, server-side session
     │
@@ -94,7 +96,7 @@ Layer7 API Gateway
 | Session     | express-session                                                                       | Server-side session (cookie with `httpOnly`, `sameSite: lax`)                                        |
 | Auth        | jose (JWT/OIDC)                                                                       | ID-token validation via JWKS; PKCE code exchange                                                     |
 | Gateway CLI | graphman-client (separate install)                                                    | Import/export bundles, manage entities — called via `graphman.sh`                                    |
-| Config      | config.json, auth-config.json, graphman.configuration                                 | Runtime settings — never committed with real values                                                  |
+| Config      | config.json, auth-config.json, graphman.configuration, github-repos.json              | Runtime settings — never committed with real values                                                  |
 
 
 **Development mode** (`npm run dev`): Vite starts on **port 5173** and proxies every `/api/*` request to Express on **port 3002**. Both processes start with a single command.
@@ -284,6 +286,7 @@ Work through this list in order. The first block covers local development; the s
 [ ] Step 2a — graphman-client cloned/extracted at the expected path (e.g. ../../graphman-client-main)
 [ ] Step 2a — graphman.configuration created inside graphman-client-main/ with at least one gateway entry
 [ ] Cred 2  — auth-config.json filled in (gateway loginUrl; OIDC fields optional for basic-auth login)
+[ ] Optional — github-repos.json configured via GitHub Config page (required only for Repository SyncUp)
 [ ] Cred 2  — config.json filled in (graphmanHome path, gateway alias names, schema versions)
 [ ] Step 3  — npm install completed (no errors)
 [ ] Step 5  — npm run dev shows "VITE ready" and "Gateway Utility API server running"
@@ -689,10 +692,12 @@ git push origin v1.0.1
 | `dist/`                            | Compiled output; regenerated with `npm run build`  |
 | `k8s/secret.yaml`                  | Contains real gateway usernames and passwords      |
 | `k8s/docker-registry-secret.yaml`  | Contains real Docker Hub Personal Access Token     |
+| `k8s/github-repos-secret.yaml`     | Contains real GitHub PATs for Repository SyncUp    |
 | `auth-config.json` (after editing) | Contains real gateway URLs — only safe as template |
 | `response/`                        | Runtime data files                                 |
 | `generated/`                       | Runtime generated files                            |
 | `*.configuration`                  | graphman credential files                          |
+| `github-repos.json`                | GitHub PATs for Repository SyncUp                  |
 | `scripts/vendor/*.tgz`             | Downloaded package tarballs                        |
 
 
@@ -711,6 +716,8 @@ All of the above are already covered by `.gitignore`.
 | Docker Hub PAT (pull)        | Kubernetes Secret                   | `k8s/docker-registry-secret.yaml.template` | `kubectl create secret`     |
 | Graphman gateway credentials | Kubernetes Secret                   | `k8s/secret.yaml.template`                 | `kubectl apply`             |
 | Express session signing key  | Kubernetes Secret                   | `k8s/session-secret.yaml` (placeholder)    | `kubectl create secret`     |
+| GitHub PAT (Repository SyncUp) | `github-repos.json` (local, gitignored) | Created via **GitHub Config** page       | Local file, never committed |
+| GitHub PAT (Kubernetes)        | Kubernetes Secret `gateway-utility-github-repos` | `k8s/github-repos-secret.yaml.template` | `kubectl apply` (optional)  |
 
 
 ---
@@ -746,5 +753,6 @@ All documentation lives in `docs/`. `README.md` (this file) is the entry point.
 | [docs/Rebuild-Guide.md](./docs/Rebuild-Guide.md)         | Day-to-day rebuild pre-flight checks, step-by-step rebuild, local Docker test, build troubleshooting, technology stack, npm package inventory                        |
 | [docs/Deployment-Guide.md](./docs/Deployment-Guide.md)   | First-time Docker build (all package-image.sh modes), complete 15-step Kubernetes deployment, Envoy Gateway setup, secrets, HTTPRoutes, scaling, K8s troubleshooting |
 | [scripts/README.md](./scripts/README.md)                 | Package validation and vendor workflow for air-gapped / offline builds                                                                                               |
+| [docs/Repository-SyncUp-Guide.md](./docs/Repository-SyncUp-Guide.md) | Repository SyncUp tool — GitHub Config setup, Gateway → Git and Git → Gateway workflows, API reference, file structure, troubleshooting, security notes |
 
 

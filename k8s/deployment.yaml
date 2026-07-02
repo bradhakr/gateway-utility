@@ -77,7 +77,15 @@ spec:
             - name: graphman-config
               mountPath: /app/graphman-client/graphman.configuration
               subPath: graphman.configuration
-              # readOnly: false
+              readOnly: true
+
+            # github-repos.json from Secret — optional; only needed for Repository SyncUp
+            # Managed via kubectl (see k8s/github-repos-secret.yaml.template).
+            # The GitHub Config UI page cannot save changes while this mount is active.
+            - name: github-repos-config
+              mountPath: /app/github-repos.json
+              subPath: github-repos.json
+              readOnly: true
 
             # Writable scratch directories for temporary export/import files
             - name: response-dir
@@ -133,6 +141,11 @@ spec:
         - name: graphman-config
           secret:
             secretName: gateway-utility-graphman
+
+        - name: github-repos-config
+          secret:
+            secretName: gateway-utility-github-repos
+            optional: true   # Pod starts normally if the secret is absent (Repository SyncUp shows no repos)
 
         # Ephemeral scratch space — cleared on pod restart.
         # server.js also purges files older than 24 h automatically.

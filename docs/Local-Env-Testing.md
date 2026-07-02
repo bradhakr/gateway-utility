@@ -17,6 +17,7 @@ The application requires login before accessing any tool. After authenticating y
 | **Entity Forge** | `/entity-forge` | Build a new gateway entity through a guided, schema-driven form. Smart type-aware controls populate the bundle automatically — no raw JSON editing required. Preview and import directly to a gateway. The form grows to its natural height for any schema size — simple types (e.g. ClusterProperty) display compactly; complex types with many nested fields (e.g. L7Policy, services) scroll via the main page with the live JSON preview panel staying visible as a sticky column alongside. |
 | **Entity Browser** | `/entity-browser` | Query any gateway using built-in ByFilters GraphQL queries. Select an entity type, define field conditions, and retrieve matching entities in a live results table. Export results as JSON. Requires schema v11.2.0+. |
 | **Bundle Import** | `/new-entity` | Upload or paste any valid Graphman JSON bundle and import it to a configured gateway. Entity types and item counts are listed automatically; import triggers in one click. |
+| **Repository SyncUp** | `/repo-syncup` | Bi-directional sync between a Layer7 API Gateway and a GitHub repository. **Gateway → Git:** export selected entities, explode the bundle (policy XML extracted at level 2), preview the exploded file tree, then push each file to GitHub via REST API — no `git` binary required. **Git → Gateway:** browse a repository's entity files grouped by type, select individual files, implode to a Graphman bundle, and import to a target gateway. Entity-level selection (not just type-level) in both directions. Commit message and target branch are configurable before push. |
 
 ### Configuration
 
@@ -25,6 +26,7 @@ The application requires login before accessing any tool. After authenticating y
 | **App Config** | `/configuration` | Set gateway names, login URL, Graphman home path, default assertion type, and export/import schema versions. Saved to `config.json`. Navigating away with unsaved changes triggers a warning. |
 | **Graphman Config** | `/graphman-config` | Add, edit, or remove gateway connection entries (address, credentials, TLS, `allowMutations`) and configure global Graphman runtime options. Reads and writes `graphman.configuration` directly. Navigating away with unsaved changes triggers a warning. |
 | **Auth Config** | `/auth-setup` | Configure gateway basic-auth login endpoints and OIDC settings (discovery URL, client ID, scopes, redirect URIs). Intentionally reachable before login so auth misconfigurations can be corrected. |
+| **GitHub Config** | `/github-config` | Add, edit, or remove GitHub repository entries used by Repository SyncUp. Fields: display name, owner, repository name, default branch, Personal Access Token (PAT), description. PATs are stored server-side in `github-repos.json` (gitignored) and masked on read — never returned to the browser after saving. Requires `repo` scope (classic PAT) or **Contents: Read & Write** (fine-grained PAT). |
 
 ### System
 
@@ -46,7 +48,7 @@ GatewayUtility/
 │   │   └── AuthContext.tsx  # Session state shared across the app (OIDC BFF)
 │   ├── components/        # Header, Sidebar, Footer, Layout, NavigationBlocker (unsaved-changes modal)
 │   ├── hooks/             # Shared React hooks — useDirtyGuard (navigation guard for unsaved changes)
-│   └── pages/             # One file per page (15 pages total — see Navigation above)
+│   └── pages/             # One file per page (17 pages total — see Navigation above)
 ├── response/              # Scratch dir — exported bundle data (spFolderSVCFull*.json), results
 ├── generated/             # Scratch dir — generated bundle files from Find Assertions
 ├── public/                # Static assets (broadcom.png, favicon)
@@ -57,7 +59,7 @@ GatewayUtility/
 
 The Vite dev server proxies every `/api/*` request to `localhost:3002`.
 
-Scratch directories (`response/` and `generated/`) are cleaned automatically on startup and every 24 hours — files older than 24 hours are removed.
+Scratch directories (`response/` and `generated/`) are cleaned automatically on startup and every 24 hours — files older than 24 hours are removed. Repository SyncUp creates `response/syncup_tmp_*/` subdirectories during the explode step; these are cleaned up immediately after a push or import, or swept by the 24-hour cleanup.
 
 ## Running
 
@@ -151,6 +153,23 @@ Then open **http://localhost:3002**.
 |--------|------|-------------|
 | POST | `/api/entity-forge` | Validate and import a schema-built entity bundle to a named gateway |
 
+### GitHub Config
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/github-repos` | Read `github-repos.json` — return configured repositories with PATs masked as `***` |
+| POST | `/api/github-repos-save` | Write `github-repos.json` — preserves existing PAT when `***` is sent for a repo entry |
+
+### Repository SyncUp
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/repo-sync/export-selected` | Run `graphman.sh export --using all` for a gateway; return full entity map (type → items array) for step 2 selection |
+| POST | `/api/repo-sync/explode` | Accept a filtered bundle, write to a temp dir, run `graphman.sh explode --options.level 2`, scan the output, return flat file list; temp dir kept alive for the subsequent push step |
+| POST | `/api/repo-sync/push-to-github` | For each selected exploded file, call GitHub REST API `PUT /repos/{owner}/{repo}/contents/{path}` with the stored PAT; supports commit message and branch; cleans up temp dir on completion |
+| POST | `/api/repo-sync/list-repo-contents` | Call GitHub API `GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1`; filter to known graphman entity folder names; return grouped file listing |
+| POST | `/api/repo-sync/pull-and-import` | Download selected files from GitHub, write to a temp dir, run `graphman.sh implode` then `graphman.sh import`; return import log; cleans up temp dir |
+
 ### Keys & Certificates
 
 | Method | Path | Description |
@@ -172,4 +191,7 @@ Then open **http://localhost:3002**.
 - **`graphman.configuration`** — a valid graphman configuration file with at least one gateway entry (address, username, password). Located at `<graphmanHome>/graphman.configuration` or `GatewayUtility/graphman.configuration`.
 - **`config.json`** — created automatically with blank defaults on first run. Update via the **App Config** page or edit directly. Key fields: `graphmanHome`, `sourceGateway`, `targetGateway`, `exportSchema`, `importSchema`.
 - **`auth-config.json`** (optional) — configure via the **Auth Config** page. Required only when using gateway basic-auth login or OIDC SSO. Contains `gateway.loginUrl`, `gateway.logoffUrl`, and OIDC client settings.
+- **`github-repos.json`** (optional) — created by the **GitHub Config** page. Required only when using Repository SyncUp. Contains GitHub repository entries with owner, repo name, branch, and PAT. Gitignored — never committed.
+
+For a full walkthrough of Repository SyncUp including GitHub PAT setup, step-by-step workflows, and troubleshooting, see **[docs/Repository-SyncUp-Guide.md](./Repository-SyncUp-Guide.md)**.
 - **Bundle data** — most tools (Compliance, Keys & Certificates, Entity Inspector) read from `response/spFolderSVCFull.json`. This file is generated by running **Export All** in the Find Assertions or Entity Inspector pages, or by running `graphman.sh export --using all` manually.

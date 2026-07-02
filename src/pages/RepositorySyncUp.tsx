@@ -29,7 +29,7 @@ interface RepoFile { path: string; size: number; sha: string }
 interface RepoGrouped { [entityType: string]: RepoFile[] }
 
 // Result
-interface PushResult   { relPath: string;  success: boolean; error?: string }
+interface PushResult   { relPath: string; success: boolean; action?: 'created' | 'updated' | 'failed'; error?: string }
 interface ImportResult { success: boolean; gateway: string; downloaded: number; importLog: string; downloadResults: { path: string; success: boolean; error?: string }[] }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -309,10 +309,10 @@ function Step2Gw({ entityMap, selected, setSelected, onPreview, previewLoading, 
   }
 
   function toggleType(key: string, items: EntityItem[]) {
-    const allSelected = items.every((_, i) => selected.has(`${key}::${i}`))
+    const allTypeSelected = items.every((_, i) => selected.has(`${key}::${i}`))
     const n = new Set(selected)
-    if (allSelected) items.forEach((_, i) => n.delete(`${key}::${i}`))
-    else             items.forEach((_, i) => n.add(`${key}::${i}`))
+    if (allTypeSelected) items.forEach((_, i) => n.delete(`${key}::${i}`))
+    else                 items.forEach((_, i) => n.add(`${key}::${i}`))
     setSelected(n)
   }
 
@@ -323,7 +323,22 @@ function Step2Gw({ entityMap, selected, setSelected, onPreview, previewLoading, 
     setSelected(n)
   }
 
+  const totalItems    = Object.values(entityMap).reduce((sum, items) => sum + items.length, 0)
   const totalSelected = selected.size
+  const allSelected   = totalItems > 0 && totalSelected === totalItems
+  const someSelected  = totalSelected > 0 && totalSelected < totalItems
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelected(new Set())
+    } else {
+      const all = new Set<string>()
+      for (const [key, items] of Object.entries(entityMap)) {
+        items.forEach((_, i) => all.add(`${key}::${i}`))
+      }
+      setSelected(all)
+    }
+  }
 
   return (
     <Card>
@@ -341,8 +356,11 @@ function Step2Gw({ entityMap, selected, setSelected, onPreview, previewLoading, 
 
       <div style={{ border: '1px solid var(--color-border)', borderRadius: '7px', overflow: 'hidden', marginBottom: '16px' }}>
         {/* Header */}
-        <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 80px 80px 80px', alignItems: 'center', padding: '7px 12px', background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid var(--color-border)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--color-text-secondary)' }}>
-          <span/>
+        <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 80px 80px 80px', alignItems: 'center', padding: '7px 12px', background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid var(--color-border)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--color-text-secondary)', position: 'sticky', top: 0, zIndex: 1 }}>
+          <input type="checkbox" checked={allSelected} ref={el => { if (el) el.indeterminate = someSelected }}
+            onChange={toggleSelectAll}
+            title="Select / deselect all entities"
+            style={{ cursor: 'pointer', accentColor: PAGE_COLOR }} />
           <span>Entity Type</span>
           <span style={{ textAlign: 'center' }}>Count</span>
           <span style={{ textAlign: 'center' }}>Selected</span>
@@ -446,7 +464,18 @@ function Step2Repo({ grouped, selected, setSelected, onReview, error }: Step2Rep
     setSelected(n)
   }
 
+  const allFiles     = Object.values(grouped).flatMap(files => files.map(f => f.path))
   const totalSelected = selected.size
+  const allSelected  = allFiles.length > 0 && allFiles.every(p => selected.has(p))
+  const someSelected = allFiles.some(p => selected.has(p)) && !allSelected
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelected(new Set())
+    } else {
+      setSelected(new Set(allFiles))
+    }
+  }
 
   return (
     <Card>
@@ -463,8 +492,11 @@ function Step2Repo({ grouped, selected, setSelected, onReview, error }: Step2Rep
       </p>
 
       <div style={{ border: '1px solid var(--color-border)', borderRadius: '7px', overflow: 'hidden', marginBottom: '16px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 80px 70px', alignItems: 'center', padding: '7px 12px', background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid var(--color-border)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--color-text-secondary)' }}>
-          <span/>
+        <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 80px 70px', alignItems: 'center', padding: '7px 12px', background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid var(--color-border)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--color-text-secondary)', position: 'sticky', top: 0, zIndex: 1 }}>
+          <input type="checkbox" checked={allSelected} ref={el => { if (el) el.indeterminate = someSelected }}
+            onChange={toggleSelectAll}
+            title="Select / deselect all files"
+            style={{ cursor: 'pointer', accentColor: PAGE_COLOR }} />
           <span>File Path</span>
           <span style={{ textAlign: 'center' }}>Count</span>
           <span style={{ textAlign: 'center' }}>Size</span>
@@ -678,8 +710,25 @@ function Step4({ direction, pushResults, importResult, importError, onReset }: S
   const [logOpen, setLogOpen] = useState(false)
 
   if (direction === 'gw-to-git' && pushResults) {
-    const ok      = pushResults.filter(r => r.success).length
+    const created = pushResults.filter(r => r.action === 'created').length
+    const updated = pushResults.filter(r => r.action === 'updated').length
     const failed  = pushResults.filter(r => !r.success).length
+
+    const actionColor = (action?: string) => {
+      if (action === 'created') return PAGE_COLOR
+      if (action === 'updated') return '#3b82f6'
+      return '#f87171'
+    }
+    const actionBg = (action?: string) => {
+      if (action === 'created') return `${PAGE_RGBA}0.05)`
+      if (action === 'updated') return 'rgba(59,130,246,0.05)'
+      return 'rgba(239,68,68,0.05)'
+    }
+    const actionLabel = (action?: string) => {
+      if (action === 'created') return 'Created'
+      if (action === 'updated') return 'Updated'
+      return 'Failed'
+    }
 
     return (
       <Card>
@@ -692,7 +741,12 @@ function Step4({ direction, pushResults, importResult, importError, onReset }: S
               Push Complete
             </h2>
             <p style={{ margin: '2px 0 0', fontSize: '12px', color: 'var(--color-text-secondary)' }}>
-              {ok} pushed successfully{failed > 0 ? `, ${failed} failed` : ''}
+              {created > 0 && <span style={{ color: PAGE_COLOR, fontWeight: 700 }}>{created} created</span>}
+              {created > 0 && (updated > 0 || failed > 0) && <span style={{ margin: '0 4px' }}>·</span>}
+              {updated > 0 && <span style={{ color: '#3b82f6', fontWeight: 700 }}>{updated} updated</span>}
+              {updated > 0 && failed > 0 && <span style={{ margin: '0 4px' }}>·</span>}
+              {failed > 0  && <span style={{ color: '#f87171', fontWeight: 700 }}>{failed} failed</span>}
+              {created === 0 && updated === 0 && failed === 0 && <span>No files processed</span>}
             </p>
           </div>
         </div>
@@ -704,8 +758,8 @@ function Step4({ direction, pushResults, importResult, importError, onReset }: S
             <span style={{ textAlign: 'center' }}>Status</span>
           </div>
           {pushResults.map(r => (
-            <div key={r.relPath} style={{ display: 'grid', gridTemplateColumns: '24px 1fr 80px', alignItems: 'center', padding: '7px 12px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: r.success ? `${PAGE_RGBA}0.05)` : 'rgba(239,68,68,0.05)' }}>
-              <span style={{ color: r.success ? PAGE_COLOR : '#f87171' }}>
+            <div key={r.relPath} style={{ display: 'grid', gridTemplateColumns: '24px 1fr 80px', alignItems: 'center', padding: '7px 12px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: actionBg(r.action) }}>
+              <span style={{ color: actionColor(r.action) }}>
                 {r.success
                   ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
                   : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>}
@@ -714,8 +768,8 @@ function Step4({ direction, pushResults, importResult, importError, onReset }: S
                 <div style={{ fontSize: '12px', fontFamily: 'ui-monospace,monospace', color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.relPath}</div>
                 {r.error && <div style={{ fontSize: '11px', color: '#fca5a5', marginTop: '2px' }}>{r.error}</div>}
               </div>
-              <span style={{ textAlign: 'center', fontSize: '11px', fontWeight: 700, color: r.success ? PAGE_COLOR : '#f87171' }}>
-                {r.success ? 'Pushed' : 'Failed'}
+              <span style={{ textAlign: 'center', fontSize: '11px', fontWeight: 700, color: actionColor(r.action) }}>
+                {actionLabel(r.action)}
               </span>
             </div>
           ))}
@@ -949,6 +1003,11 @@ export default function RepositorySyncUp() {
         }),
       })
       const d = await r.json()
+      // 422 = branch missing or other pre-flight failure — stay on step 3 with error
+      if (!r.ok && !d.results) {
+        setError(d.error + (d.detail ? `\n${d.detail}` : ''))
+        return
+      }
       setPushResults(d.results || [])
       setStep(4)
     } catch (e) {

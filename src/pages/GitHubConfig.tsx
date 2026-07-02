@@ -31,12 +31,12 @@ function apiToRepos(raw: { name: string; owner: string; repo: string; branch: st
 
 function reposToApi(items: RepoItem[]) {
   return items.map(r => ({
-    name:        r.name,
-    owner:       r.owner,
-    repo:        r.repo,
-    branch:      r.branch,
-    pat:         r.pat,
-    description: r.description,
+    name:        r.name.trim(),
+    owner:       r.owner.trim(),
+    repo:        r.repo.trim(),
+    branch:      r.branch.trim(),
+    pat:         r.pat,          // PAT preservation is handled server-side; don't trim (might break '***' sentinel)
+    description: r.description.trim(),
   }))
 }
 
