@@ -18,6 +18,8 @@ import EntityBrowser      from './pages/EntityBrowser'
 import GraphmanVersion    from './pages/GraphmanVersion'
 import AuthSetup         from './pages/AuthSetup'
 import OidcCallback      from './pages/OidcCallback'
+import RepositorySyncUp  from './pages/RepositorySyncUp'
+import GitHubConfig      from './pages/GitHubConfig'
 
 // ─── Route guards ─────────────────────────────────────────────────────────────
 
@@ -64,6 +66,8 @@ function AppRoutes() {
         <Route path="/entity-forge"        element={<ProtectedRoute><EntityForge /></ProtectedRoute>} />
         <Route path="/entity-browser"     element={<ProtectedRoute><EntityBrowser /></ProtectedRoute>} />
         <Route path="/graphman-version"   element={<ProtectedRoute><GraphmanVersion /></ProtectedRoute>} />
+        <Route path="/repo-syncup"        element={<ProtectedRoute><RepositorySyncUp /></ProtectedRoute>} />
+        <Route path="/github-config"      element={<ProtectedRoute><GitHubConfig /></ProtectedRoute>} />
         {/* Auth Setup is intentionally public — must be reachable before login to fix misconfigurations */}
         <Route path="/auth-setup"         element={<AuthSetup />} />
 

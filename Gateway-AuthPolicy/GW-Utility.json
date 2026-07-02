@@ -1,0 +1,116 @@
+{
+  "encassConfigs": [
+    {
+      "goid": "5300fac5af2fa1fd81373ba0a00e97bd",
+      "guid": "f95a51f4-12b2-4154-87a8-3803b6c0a0e1",
+      "name": "GU-Login",
+      "checksum": "5538da23e6fc64e875ecc0e35cf72f6da840a704",
+      "description": "For Gateway Utility Login Use",
+      "policyName": "GU-Utility",
+      "encassArgs": [],
+      "encassResults": [
+        {
+          "name": "idp.error.login",
+          "type": "STRING"
+        },
+        {
+          "name": "idp.error.message",
+          "type": "STRING"
+        }
+      ],
+      "properties": [
+        {
+          "name": "allowTracing",
+          "value": "true"
+        },
+        {
+          "name": "paletteFolder",
+          "value": "accessControl"
+        },
+        {
+          "name": "passMetricsToParent",
+          "value": "true"
+        }
+      ]
+    }
+  ],
+  "internalIdps": [
+    {
+      "goid": "0000000000000000fffffffffffffffe",
+      "name": "Internal Identity Provider",
+      "checksum": "cdcc49ca201ff6bf8160e1281aa07c79d0a60099",
+      "certValidation": "USE_DEFAULT"
+    }
+  ],
+  "policies": [
+    {
+      "goid": "5300fac5af2fa1fd81373ba0a00e97ac",
+      "guid": "c047e4c3-f60f-4bae-a636-cc589ab12ff1",
+      "name": "GU-Utility",
+      "policyType": "FRAGMENT",
+      "checksum": "831e62732ff147775881607c9f6f5681d44fe404",
+      "folderPath": "/Gateway-Utility",
+      "soap": false,
+      "policy": {
+        "json": "{\"All\":[{\"Comment\":\"Policy Fragment: GU-Utility\"},{\"OneOrMore\":[{\"All\":[{\"Ssl\":{}},{\"HttpBasic\":{}},{\"Authentication\":{\"identityProviderOid\":\"0000000000000000fffffffffffffffe\"}}]},{\"All\":[{\"SetVariable\":{\"expression\":\"{ \\\"Error\\\": \\\"Login Failed\\\",\\r\\n  \\\"Description\\\": User Authentication Failed\\\"}\",\"variable\":\"error\"}},{\"CustomizeErrorResponse\":{\"content\":\"\\\"${error}\\\"\",\"contentType\":\"application/json; charset=UTF-8\",\"extraHeaders\":[{\"key\":\"X-L7-Error\",\"value\":\"LOGIN FAILED\"}],\"httpStatus\":\"401\",\"includePolicyDownloadURL\":true}}]}]}]}"
+      }
+    }
+  ],
+  "services": [
+    {
+      "goid": "5300fac5af2fa1fd81373ba0a00e97c3",
+      "guid": "60922bd2-958e-4480-a8dd-7fc31ca2d8f6",
+      "name": "GW-Utility Logoff",
+      "resolutionPath": "/rest/gu/logoff",
+      "serviceType": "WEB_API",
+      "checksum": "569759dc6fff3434280618861c8ca1dd8babc1ba",
+      "enabled": true,
+      "folderPath": "/Gateway-Utility",
+      "methodsAllowed": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "tracingEnabled": false,
+      "wssProcessingEnabled": false,
+      "laxResolution": false,
+      "policy": {
+        "json": "{\"All\":[{\"HardcodedResponse\":{\"body\":\"{ \\\"Logoff\\\": \\\"Success\\\" }\",\"contentType\":\"application/json; charset=UTF-8\"}}]}"
+      }
+    },
+    {
+      "goid": "5300fac5af2fa1fd81373ba0a00e9771",
+      "guid": "af33b842-fcc0-400d-b546-1dc0ca981be1",
+      "name": "GW-Utiltiy",
+      "resolutionPath": "/rest/gu/login",
+      "serviceType": "WEB_API",
+      "checksum": "6cb0b6c5ea9fa481ca894f629a1788269fe19a8e",
+      "enabled": true,
+      "folderPath": "/Gateway-Utility",
+      "methodsAllowed": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "tracingEnabled": false,
+      "wssProcessingEnabled": false,
+      "laxResolution": false,
+      "policy": {
+        "json": "{\"All\":[{\"Encapsulated\":{\"encassGuid\":\"f95a51f4-12b2-4154-87a8-3803b6c0a0e1\",\"encassName\":\"GU-Login\"}},{\"HardcodedResponse\":{\"body\":\"{ \\\"Login\\\": \\\"Success\\\" }\",\"contentType\":\"application/json; charset=UTF-8\"}}]}"
+      }
+    }
+  ],
+  "properties": {
+    "meta": {
+      "id": "86b8b1d0-35b3-4839-8c09-a996082d352f",
+      "name": "Gateway Graphman Bundle - 2026-06-24T22:12:32.378Z",
+      "author": "bradhakr",
+      "hostname": "ssggw.vks.security.broadcom.com",
+      "timestamp": "2026-06-24T22:12:32.378Z",
+      "schema": "11.2.1"
+    },
+    "defaultAction": "NEW_OR_UPDATE"
+  }
+}

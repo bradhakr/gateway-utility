@@ -14,11 +14,18 @@ const app = express();
 const PORT = 3002;
 
 // Paths — all local to GatewayUtility; no dependency on ../Find-Assertions
-const SCRIPTS_DIR       = __dirname;
-const CONFIG_FILE       = path.join(__dirname, 'config.json');
-const AUTH_CONFIG_FILE  = path.join(__dirname, 'auth-config.json');
-const RESPONSE_DIR      = path.join(__dirname, 'response');
-const GENERATED_DIR     = path.join(__dirname, 'generated');
+const SCRIPTS_DIR         = __dirname;
+const CONFIG_FILE         = path.join(__dirname, 'config.json');
+const AUTH_CONFIG_FILE    = path.join(__dirname, 'auth-config.json');
+const GITHUB_REPOS_FILE   = path.join(__dirname, 'github-repos.json');
+const RESPONSE_DIR        = path.join(__dirname, 'response');
+const GENERATED_DIR       = path.join(__dirname, 'generated');
+
+// Trust the first proxy hop (nginx / k8s ingress) so that:
+//   req.protocol === 'https' when the client is on HTTPS,
+//   secure: true cookies are served correctly, and
+//   session cookies round-trip properly behind a reverse proxy.
+app.set('trust proxy', 1);
 
 // ─── Session middleware (BFF pattern for OIDC) ────────────────────────────────
 // In-memory store — compatible with emptyDir volumes + sessionAffinity:ClientIP.
@@ -108,6 +115,22 @@ function runScript(scriptPath, args, cwd, graphmanHome) {
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', message: 'Gateway Utility server is running', port: PORT });
 });
+
+// ─── OIDC in-flight pending store ────────────────────────────────────────────
+// Keyed by state (random hex string generated in oidc-init).
+// This decouples token-exchange from the session cookie: when the OIDC flow
+// runs inside an iframe, the browser's SameSite=Lax policy for nested contexts
+// may not carry the session cookie on the cross-site redirect back to the
+// callback URL. Looking up by state (which is in the callback's query params)
+// avoids that problem entirely. Session storage is still written as a fallback.
+const oidcPendingStore = new Map(); // state → { codeVerifier, nonce, doc, createdAt }
+const OIDC_PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of oidcPendingStore) {
+    if (now - v.createdAt > OIDC_PENDING_TTL_MS) oidcPendingStore.delete(k);
+  }
+}, 5 * 60 * 1000).unref();
 
 // ─── Auth config helpers ──────────────────────────────────────────────────────
 
@@ -349,7 +372,9 @@ app.get('/api/auth/oidc-init', async (req, res) => {
       params.set('code_challenge', codeChallenge);
     }
 
-    // Store in server-side session (BFF — nothing sensitive sent to browser)
+    // Store in both the state-keyed Map (robust against iframe/SameSite cookie
+    // restrictions) and the session (backward-compatible direct-redirect path).
+    oidcPendingStore.set(state, { codeVerifier, nonce, doc, createdAt: Date.now() });
     req.session.oidcPending = { codeVerifier, state, nonce, doc };
     await new Promise((ok, fail) => req.session.save(e => e ? fail(e) : ok(undefined)));
 
@@ -363,10 +388,23 @@ app.get('/api/auth/oidc-init', async (req, res) => {
 
 app.post('/api/auth/token-exchange', async (req, res) => {
   const { code, state } = req.body || {};
-  const pending = req.session.oidcPending;
+
+  // Prefer the state-keyed Map (works from iframe, popup, or direct redirect
+  // regardless of SameSite cookie visibility). Fall back to the session for
+  // backward compatibility with the plain full-page redirect path.
+  const mapPending = state ? oidcPendingStore.get(state) : undefined;
+  const pending    = mapPending || req.session.oidcPending;
 
   if (!pending) return res.status(400).json({ success: false, error: 'No OIDC flow in progress. Please restart login.' });
-  if (state !== pending.state) return res.status(400).json({ success: false, error: 'State mismatch — possible CSRF. Please restart login.' });
+  // For the session path the state is stored inside the pending object; for the
+  // Map path the key IS the state so no extra comparison is needed.
+  if (!mapPending && state !== pending.state) {
+    return res.status(400).json({ success: false, error: 'State mismatch — possible CSRF. Please restart login.' });
+  }
+
+  // Single-use: remove from both stores immediately.
+  if (state) oidcPendingStore.delete(state);
+  delete req.session.oidcPending;
 
   const cfg = loadAuthConfig();
   const oidc = cfg.oidc || {};
@@ -462,7 +500,6 @@ app.post('/api/auth/token-exchange', async (req, res) => {
                   || Math.floor(Date.now() / 1000) + (expires_in || 3600);
 
     // ── Establish BFF session ─────────────────────────────────────────────────
-    delete req.session.oidcPending;
     req.session.oidcAuth = {
       authenticated:      true,
       username,
@@ -553,19 +590,24 @@ app.post('/api/auth/logout', async (req, res) => {
   const cfg  = loadAuthConfig();
   const oidc = cfg.oidc || {};
 
-  // Build IDSP end_session URL
-  let endSessionUrl = null;
-  if (auth?.doc?.end_session_endpoint || auth?.doc?.['end_session_endpoint']) {
-    const endEp = auth.doc.end_session_endpoint;
+  // Call IDSP end_session server-side (best-effort token invalidation).
+  // We do NOT redirect the browser to IDSP's end-session URL because:
+  //   • Without post_logout_redirect_uri IDSP returns a blank page (no UX)
+  //   • post_logout_redirect_uri requires explicit registration in IDSP's
+  //     application settings and causes a 400 error until it is
+  // Returning endSessionUrl: null causes AuthContext to fall through to the
+  // local state clear, and React routing immediately returns the user to /login.
+  // Note: the server-side GET cannot clear the user's IDSP browser SSO cookie,
+  // so re-clicking "Login with IDSP" may auto-login via SSO — this is normal
+  // SSO behaviour. For full SSO logout register the redirect URI in IDSP.
+  if (auth?.doc?.end_session_endpoint) {
     const params = new URLSearchParams();
     if (auth.id_token) params.set('id_token_hint', auth.id_token);
-    if (oidc.postLogoutRedirectUri) params.set('post_logout_redirect_uri', oidc.postLogoutRedirectUri);
-    params.set('state', crypto.randomBytes(8).toString('hex'));
-    endSessionUrl = `${endEp}?${params.toString()}`;
+    fetchUrl(`${auth.doc.end_session_endpoint}?${params.toString()}`).catch(() => {});
   }
 
   req.session.destroy(() => {});
-  res.json({ success: true, endSessionUrl });
+  res.json({ success: true, endSessionUrl: null });
 });
 
 // ─── Graphman version ─────────────────────────────────────────────────────────
@@ -2258,6 +2300,482 @@ app.post('/api/gateway-test', (req, res) => {
   reqHandle.end();
 });
 
+// ─── GitHub Repos Config ──────────────────────────────────────────────────────
+
+function loadGithubRepos() {
+  try {
+    if (fs.existsSync(GITHUB_REPOS_FILE)) {
+      return JSON.parse(fs.readFileSync(GITHUB_REPOS_FILE, 'utf8'));
+    }
+  } catch (_) { /* fall through */ }
+  return { repositories: [] };
+}
+
+function saveGithubRepos(data) {
+  fs.writeFileSync(GITHUB_REPOS_FILE, JSON.stringify(data, null, 2), 'utf8');
+}
+
+// Trim all string fields so stray whitespace in the config never breaks API paths.
+// e.g. " DevRepository" → "DevRepository"
+function normalizeRepo(r) {
+  return {
+    ...r,
+    name:   (r.name   || '').trim(),
+    owner:  (r.owner  || '').trim(),
+    repo:   (r.repo   || '').trim(),
+    branch: (r.branch || '').trim(),
+    pat:    (r.pat    || '').trim(),
+  };
+}
+
+app.get('/api/github-repos', (_req, res) => {
+  const cfg = loadGithubRepos();
+  // Mask PATs before sending to the browser
+  const safe = JSON.parse(JSON.stringify(cfg));
+  (safe.repositories || []).forEach(r => {
+    if (r.pat) r.pat = '***';
+  });
+  res.json({ success: true, repositories: safe.repositories || [] });
+});
+
+app.post('/api/github-repos-save', (req, res) => {
+  try {
+    const existing = loadGithubRepos();
+    const incoming = req.body.repositories;
+    if (!Array.isArray(incoming)) {
+      return res.status(400).json({ success: false, error: 'repositories array is required.' });
+    }
+    // Preserve existing PATs for entries where the browser sent '***'
+    const merged = incoming.map(r => {
+      if (r.pat === '***') {
+        const existing_entry = (existing.repositories || []).find(e => e.name === r.name);
+        return { ...r, pat: existing_entry?.pat || '' };
+      }
+      return r;
+    });
+    saveGithubRepos({ repositories: merged });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+// ─── Repository SyncUp ────────────────────────────────────────────────────────
+
+// Helper: GitHub REST API call (server-side only, using PAT)
+function githubRequest(method, apiPath, pat, body) {
+  return new Promise((resolve, reject) => {
+    const bodyStr = body ? JSON.stringify(body) : null;
+    // Use new URL() to parse and normalise the path — encodes any characters that
+    // would trigger ERR_UNESCAPED_CHARACTERS, without double-encoding already-%XX
+    // sequences.  Extract pathname+search so we can pass an explicit opts.path to
+    // https.request, which keeps the request fully under our control.
+    const parsed = new URL(`https://api.github.com${apiPath}`);
+    const opts = {
+      hostname: parsed.hostname,
+      port:     443,
+      path:     parsed.pathname + parsed.search,
+      method,
+      headers: {
+        'Authorization': `Bearer ${pat}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'Layer7-GatewayUtility/1.0',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(bodyStr ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
+      },
+    };
+    const req = https.request(opts, res => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, body: data ? JSON.parse(data) : {} });
+        } catch {
+          resolve({ status: res.statusCode, body: data });
+        }
+      });
+    });
+    req.on('error', reject);
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
+
+// Helper: recursively walk a directory and return flat list of files
+function walkDir(dir, base) {
+  let results = [];
+  if (!fs.existsSync(dir)) return results;
+  for (const entry of fs.readdirSync(dir)) {
+    const full = path.join(dir, entry);
+    const rel  = base ? `${base}/${entry}` : entry;
+    const stat = fs.statSync(full);
+    if (stat.isDirectory()) {
+      results = results.concat(walkDir(full, rel));
+    } else {
+      results.push({ relPath: rel, absPath: full, sizeBytes: stat.size });
+    }
+  }
+  return results;
+}
+
+// POST /api/repo-sync/export-selected
+// Exports from gateway and returns entity-type counts + full item list.
+// Body: { gateway, schema }
+app.post('/api/repo-sync/export-selected', (req, res) => {
+  const config = loadConfig();
+  const { gateway, schema } = req.body || {};
+  if (!gateway) return res.status(400).json({ success: false, error: 'gateway is required.' });
+
+  const graphmanHome   = path.resolve(SCRIPTS_DIR, config.graphmanHome || '../../graphman-client-main');
+  const graphmanScript = path.join(graphmanHome, 'graphman.sh');
+
+  if (!fs.existsSync(graphmanScript)) {
+    return res.status(400).json({ success: false, error: `graphman.sh not found at: ${graphmanScript}` });
+  }
+  if (!fs.existsSync(RESPONSE_DIR)) fs.mkdirSync(RESPONSE_DIR, { recursive: true });
+
+  const outputFile   = path.join(RESPONSE_DIR, `syncup_export_${Date.now()}.json`);
+  const schemaToUse  = schema || loadGraphmanSchema();
+  const env          = buildEnv(graphmanHome);
+  const cmd          = `"${graphmanScript}" export --gateway "${gateway}" --using all --options.schema "${schemaToUse}" --output "${outputFile}"`;
+  const priorMtime   = fs.existsSync(outputFile) ? fs.statSync(outputFile).mtimeMs : 0;
+
+  exec(cmd, { cwd: SCRIPTS_DIR, timeout: 60000, env }, (err, stdout, stderr) => {
+    const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
+    if (err) {
+      try { fs.unlinkSync(outputFile); } catch (_) {}
+      const timedOut = err.killed || err.signal === 'SIGTERM';
+      return res.status(500).json({ success: false, timedOut, error: timedOut
+        ? `Gateway "${gateway}" did not respond within 60 seconds.`
+        : `Export failed for gateway "${gateway}".`,
+        detail: combined || err.message });
+    }
+
+    if (!fs.existsSync(outputFile) || fs.statSync(outputFile).mtimeMs <= priorMtime) {
+      try { fs.unlinkSync(outputFile); } catch (_) {}
+      return res.status(500).json({ success: false, error: `Export produced no output for gateway "${gateway}".`, detail: combined });
+    }
+
+    let bundle;
+    try { bundle = JSON.parse(fs.readFileSync(outputFile, 'utf8')); }
+    catch (e) {
+      try { fs.unlinkSync(outputFile); } catch (_) {}
+      return res.status(500).json({ success: false, error: 'Export output is not valid JSON.', detail: String(e) });
+    }
+
+    // Build entity-type map: { pluralName → [items] }
+    const entityMap = {};
+    for (const [key, val] of Object.entries(bundle)) {
+      if (Array.isArray(val) && val.length > 0) entityMap[key] = val;
+    }
+
+    try { fs.unlinkSync(outputFile); } catch (_) {}
+
+    res.json({ success: true, gateway, entityMap });
+  });
+});
+
+// POST /api/repo-sync/explode
+// Accepts a filtered bundle JSON, runs graphman.sh explode --options.level 2,
+// scans the output directory, and returns the flat file list.
+// Keeps the temp dir alive (identified by tmpId) for the subsequent push step.
+// Body: { bundle, schema }
+app.post('/api/repo-sync/explode', (req, res) => {
+  const config = loadConfig();
+  const { bundle, schema } = req.body || {};
+  if (!bundle || typeof bundle !== 'object') {
+    return res.status(400).json({ success: false, error: 'bundle object is required.' });
+  }
+
+  const graphmanHome   = path.resolve(SCRIPTS_DIR, config.graphmanHome || '../../graphman-client-main');
+  const graphmanScript = path.join(graphmanHome, 'graphman.sh');
+
+  if (!fs.existsSync(graphmanScript)) {
+    return res.status(400).json({ success: false, error: `graphman.sh not found at: ${graphmanScript}` });
+  }
+
+  const tmpId      = `syncup_tmp_${Date.now()}`;
+  const tmpDir     = path.join(RESPONSE_DIR, tmpId);
+  const bundleFile = path.join(tmpDir, 'bundle.json');
+  const explodeDir = path.join(tmpDir, 'exploded');
+
+  try {
+    fs.mkdirSync(explodeDir, { recursive: true });
+    fs.writeFileSync(bundleFile, JSON.stringify(bundle, null, 2), 'utf8');
+  } catch (err) {
+    return res.status(500).json({ success: false, error: `Failed to create temp directory: ${err.message}` });
+  }
+
+  const schemaToUse = schema || loadGraphmanSchema();
+  const env         = buildEnv(graphmanHome);
+  const cmd         = `"${graphmanScript}" explode --input "${bundleFile}" --output "${explodeDir}" --options.level 2 --options.schema "${schemaToUse}"`;
+
+  exec(cmd, { cwd: SCRIPTS_DIR, timeout: 60000, env }, (err, stdout, stderr) => {
+    const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
+    if (err) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+      const timedOut = err.killed || err.signal === 'SIGTERM';
+      return res.status(500).json({ success: false, timedOut, error: timedOut
+        ? 'Explode operation timed out.'
+        : 'Explode operation failed.',
+        detail: combined || err.message });
+    }
+
+    const files = walkDir(explodeDir, '').map(f => ({
+      relPath:    f.relPath,
+      entityType: f.relPath.split('/')[0] || '',
+      sizeBytes:  f.sizeBytes,
+    }));
+
+    res.json({ success: true, tmpId, files, output: combined });
+  });
+});
+
+// POST /api/repo-sync/push-to-github
+// Pushes selected exploded files to a GitHub repository.
+// Body: { tmpId, repoName, selectedFiles, commitMessage, branch }
+app.post('/api/repo-sync/push-to-github', async (req, res) => {
+  const { tmpId, repoName, selectedFiles, commitMessage, branch } = req.body || {};
+  if (!tmpId || !repoName || !Array.isArray(selectedFiles)) {
+    return res.status(400).json({ success: false, error: 'tmpId, repoName, and selectedFiles are required.' });
+  }
+
+  const cfg = loadGithubRepos();
+  const repoRaw = (cfg.repositories || []).find(r => r.name === repoName);
+  if (!repoRaw) return res.status(404).json({ success: false, error: `Repository "${repoName}" not found in configuration.` });
+  const repo = normalizeRepo(repoRaw);  // trim whitespace from owner/repo/branch/pat
+
+  const explodeDir = path.join(RESPONSE_DIR, tmpId, 'exploded');
+  if (!fs.existsSync(explodeDir)) {
+    return res.status(404).json({ success: false, error: `Temp directory "${tmpId}" not found. Please re-run the explode step.` });
+  }
+
+  const targetBranch = branch || repo.branch || 'main';
+  const msg          = commitMessage || `Gateway SyncUp — ${new Date().toISOString()}`;
+  const results      = [];
+
+  // ── Pre-flight: confirm the target branch exists before touching any files ──
+  // GitHub returns 404 "Not Found" on PUT /contents/{path} when the branch is
+  // missing — without this check that 404 shows up cryptically on every file.
+  try {
+    const branchCheck = await githubRequest(
+      'GET',
+      `/repos/${repo.owner}/${repo.repo}/branches/${encodeURIComponent(targetBranch)}`,
+      repo.pat
+    );
+    if (branchCheck.status !== 200) {
+      try { fs.rmSync(path.join(RESPONSE_DIR, tmpId), { recursive: true, force: true }); } catch (_) {}
+      const emptyRepoHint = branchCheck.status === 404
+        ? ` If "${repo.owner}/${repo.repo}" is a new empty repository, make an initial commit (e.g. add a README) to create the default branch first.`
+        : '';
+      return res.status(422).json({
+        success: false,
+        error: `Branch "${targetBranch}" was not found in ${repo.owner}/${repo.repo}.${emptyRepoHint} Check the branch name in the commit step.`,
+        detail: `GitHub returned HTTP ${branchCheck.status}: ${branchCheck.body?.message || 'Unknown error'}`,
+      });
+    }
+  } catch (branchErr) {
+    try { fs.rmSync(path.join(RESPONSE_DIR, tmpId), { recursive: true, force: true }); } catch (_) {}
+    return res.status(500).json({ success: false, error: `Could not verify branch "${targetBranch}": ${String(branchErr)}` });
+  }
+
+  for (const relPath of selectedFiles) {
+    // Prevent path traversal — require resolved path to stay inside explodeDir
+    const safe    = path.normalize(relPath).replace(/^(\.\.[/\\])+/, '');
+    const absPath = path.join(explodeDir, safe);
+    if (!absPath.startsWith(explodeDir + path.sep) && absPath !== explodeDir) {
+      results.push({ relPath, success: false, action: 'failed', error: 'Path traversal rejected.' });
+      continue;
+    }
+    if (!fs.existsSync(absPath)) {
+      results.push({ relPath, success: false, action: 'failed', error: 'File not found in explode output.' });
+      continue;
+    }
+
+    const content     = fs.readFileSync(absPath);
+    const b64         = content.toString('base64');
+    const encodedPath = safe.split('/').map(p => encodeURIComponent(p)).join('/');
+    const apiPath     = `/repos/${repo.owner}/${repo.repo}/contents/${encodedPath}`;
+
+    try {
+      // Check if file already exists to get its SHA (required for updates)
+      const existing = await githubRequest('GET', `${apiPath}?ref=${encodeURIComponent(targetBranch)}`, repo.pat);
+      const sha      = existing.status === 200 ? existing.body.sha : undefined;
+
+      const putBody = { message: msg, content: b64, branch: targetBranch, ...(sha ? { sha } : {}) };
+      const putResp = await githubRequest('PUT', apiPath, repo.pat, putBody);
+
+      if (putResp.status === 200 || putResp.status === 201) {
+        results.push({ relPath, success: true, action: putResp.status === 201 ? 'created' : 'updated' });
+      } else {
+        console.error(`[repo-sync] push failed for "${relPath}": HTTP ${putResp.status}`, putResp.body);
+        results.push({ relPath, success: false, action: 'failed', error: `HTTP ${putResp.status} — ${putResp.body?.message || 'Unknown error'}` });
+      }
+    } catch (e) {
+      results.push({ relPath, success: false, action: 'failed', error: String(e) });
+    }
+  }
+
+  // Clean up temp dir
+  try { fs.rmSync(path.join(RESPONSE_DIR, tmpId), { recursive: true, force: true }); } catch (_) {}
+
+  const succeeded = results.filter(r => r.success).length;
+  res.json({ success: succeeded > 0, results, pushed: succeeded, total: results.length });
+});
+
+// POST /api/repo-sync/list-repo-contents
+// Lists gateway entity files from a GitHub repository (recursive tree).
+// Body: { repoName, branch }
+app.post('/api/repo-sync/list-repo-contents', async (req, res) => {
+  const { repoName, branch } = req.body || {};
+  if (!repoName) return res.status(400).json({ success: false, error: 'repoName is required.' });
+
+  const cfg = loadGithubRepos();
+  const repoRaw = (cfg.repositories || []).find(r => r.name === repoName);
+  if (!repoRaw) return res.status(404).json({ success: false, error: `Repository "${repoName}" not found in configuration.` });
+  const repo = normalizeRepo(repoRaw);  // trim whitespace from owner/repo/branch/pat
+
+  const targetBranch = branch || repo.branch || 'main';
+
+  // Known graphman explode top-level folder names (entity types)
+  const GRAPHMAN_FOLDERS = new Set([
+    'webApiServices', 'internalWebApiServices', 'soapServices', 'internalSoapServices',
+    'backgroundTaskServices', 'policyFragments', 'globalPolicies', 'encassConfigs',
+    'clusterProperties', 'jdbcConnections', 'trustedCerts', 'keys', 'sslKeys',
+    'listenPorts', 'activeConnectors', 'cassandraConnections', 'emailListeners',
+    'scheduledTasks', 'serverModuleFiles', 'customKeyValues', 'auditConfigurations',
+    'logSinks', 'roles', 'internalUsers', 'federatedUsers', 'internalGroups',
+    'federatedGroups', 'fips', 'ldaps', 'tree',
+  ]);
+
+  try {
+    // Get the commit SHA for the branch first
+    const branchResp = await githubRequest('GET', `/repos/${repo.owner}/${repo.repo}/branches/${encodeURIComponent(targetBranch)}`, repo.pat);
+    if (branchResp.status !== 200) {
+      return res.status(404).json({ success: false, error: `Branch "${targetBranch}" not found or not accessible.`, detail: branchResp.body?.message });
+    }
+    const treeSha = branchResp.body.commit.commit.tree.sha;
+
+    // Fetch full recursive tree
+    const treeResp = await githubRequest('GET', `/repos/${repo.owner}/${repo.repo}/git/trees/${treeSha}?recursive=1`, repo.pat);
+    if (treeResp.status !== 200) {
+      return res.status(500).json({ success: false, error: 'Failed to fetch repository tree.', detail: treeResp.body?.message });
+    }
+
+    const allFiles = (treeResp.body.tree || []).filter(item => item.type === 'blob');
+
+    // Group by top-level folder, keep only known graphman entity folders
+    const grouped = {};
+    for (const item of allFiles) {
+      const parts   = item.path.split('/');
+      const topDir  = parts[0];
+      const ext     = path.extname(item.path).toLowerCase();
+      if (!GRAPHMAN_FOLDERS.has(topDir)) continue;
+      if (!['.json', '.xml', '.yaml', '.yml', '.pem', '.p12'].includes(ext)) continue;
+      if (!grouped[topDir]) grouped[topDir] = [];
+      grouped[topDir].push({ path: item.path, size: item.size, sha: item.sha });
+    }
+
+    res.json({ success: true, repoName, branch: targetBranch, grouped });
+  } catch (e) {
+    res.status(500).json({ success: false, error: `Failed to list repository contents: ${String(e)}` });
+  }
+});
+
+// POST /api/repo-sync/pull-and-import
+// Downloads selected files from GitHub, implodes to a bundle, imports to gateway.
+// Body: { repoName, branch, selectedPaths, gateway, schema }
+app.post('/api/repo-sync/pull-and-import', async (req, res) => {
+  const { repoName, branch, selectedPaths, gateway, schema } = req.body || {};
+  if (!repoName || !Array.isArray(selectedPaths) || !gateway) {
+    return res.status(400).json({ success: false, error: 'repoName, selectedPaths, and gateway are required.' });
+  }
+
+  const cfg = loadGithubRepos();
+  const repoRaw = (cfg.repositories || []).find(r => r.name === repoName);
+  if (!repoRaw) return res.status(404).json({ success: false, error: `Repository "${repoName}" not found in configuration.` });
+  const repo = normalizeRepo(repoRaw);  // trim whitespace from owner/repo/branch/pat
+
+  const config      = loadConfig();
+  const graphmanHome   = path.resolve(SCRIPTS_DIR, config.graphmanHome || '../../graphman-client-main');
+  const graphmanScript = path.join(graphmanHome, 'graphman.sh');
+
+  if (!fs.existsSync(graphmanScript)) {
+    return res.status(400).json({ success: false, error: `graphman.sh not found at: ${graphmanScript}` });
+  }
+
+  const targetBranch = branch || repo.branch || 'main';
+  const tmpId        = `syncup_tmp_${Date.now()}`;
+  const tmpDir       = path.join(RESPONSE_DIR, tmpId);
+  const implodeDir   = path.join(tmpDir, 'implode');
+  const bundleFile   = path.join(tmpDir, 'imploded.json');
+
+  try { fs.mkdirSync(implodeDir, { recursive: true }); }
+  catch (err) { return res.status(500).json({ success: false, error: `Failed to create temp directory: ${err.message}` }); }
+
+  // Download selected files from GitHub
+  const downloadResults = [];
+  for (const filePath of selectedPaths) {
+    const safe = path.normalize(filePath).replace(/^(\.\.[/\\])+/, '');
+    try {
+      const encodedFilePath = safe.split('/').map(p => encodeURIComponent(p)).join('/');
+      const resp = await githubRequest('GET', `/repos/${repo.owner}/${repo.repo}/contents/${encodedFilePath}?ref=${encodeURIComponent(targetBranch)}`, repo.pat);
+      if (resp.status !== 200) {
+        downloadResults.push({ path: filePath, success: false, error: `HTTP ${resp.status} — ${resp.body?.message || 'Unknown error'}` });
+        continue;
+      }
+      const content = Buffer.from(resp.body.content.replace(/\n/g, ''), 'base64');
+      const localPath = path.join(implodeDir, safe);
+      fs.mkdirSync(path.dirname(localPath), { recursive: true });
+      fs.writeFileSync(localPath, content);
+      downloadResults.push({ path: filePath, success: true });
+    } catch (e) {
+      downloadResults.push({ path: filePath, success: false, error: String(e) });
+    }
+  }
+
+  const downloadedCount = downloadResults.filter(r => r.success).length;
+  if (downloadedCount === 0) {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    return res.status(500).json({ success: false, error: 'No files were successfully downloaded from GitHub.', downloadResults });
+  }
+
+  const schemaToUse = schema || loadGraphmanSchema();
+  const env         = buildEnv(graphmanHome);
+  const implodeCmd  = `"${graphmanScript}" implode --input "${implodeDir}" --output "${bundleFile}"`;
+
+  exec(implodeCmd, { cwd: SCRIPTS_DIR, timeout: 60000, env }, (implodeErr, implodeOut, implodeErr2) => {
+    const implodeLog = [implodeOut, implodeErr2].filter(Boolean).join('\n').trim();
+
+    if (implodeErr || !fs.existsSync(bundleFile)) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+      return res.status(500).json({ success: false, error: 'Implode operation failed.', detail: implodeLog || implodeErr?.message, downloadResults });
+    }
+
+    const importCmd = `"${graphmanScript}" import --gateway "${gateway}" --options.schema "${schemaToUse}" --input "${bundleFile}"`;
+
+    exec(importCmd, { cwd: SCRIPTS_DIR, timeout: 120000, env }, (importErr, importOut, importErr2) => {
+      const importLog = [importOut, importErr2].filter(Boolean).join('\n').trim();
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+
+      if (importErr) {
+        const timedOut = importErr.killed || importErr.signal === 'SIGTERM';
+        return res.status(500).json({ success: false, timedOut, error: timedOut
+          ? `Gateway "${gateway}" did not respond within 120 seconds.`
+          : `Import to gateway "${gateway}" failed.`,
+          detail: importLog || importErr.message, downloadResults });
+      }
+
+      const errorSignals = [/error encountered/i, /ECONNREFUSED/, /ENOTFOUND/, /ETIMEDOUT/, /socket hang up/i, /connection refused/i];
+      if (errorSignals.some(p => p.test(importLog))) {
+        return res.status(500).json({ success: false, error: `Gateway "${gateway}" reported an error.`, detail: importLog, downloadResults });
+      }
+
+      res.json({ success: true, gateway, downloaded: downloadedCount, importLog, downloadResults });
+    });
+  });
+});
+
 // ─── SPA fallback ─────────────────────────────────────────────────────────────
 
 app.get('*', (req, res) => {
@@ -2285,19 +2803,23 @@ function cleanScratchDirs() {
   let removed = 0;
   for (const dir of [RESPONSE_DIR, GENERATED_DIR]) {
     if (!fs.existsSync(dir)) continue;
-    for (const file of fs.readdirSync(dir)) {
-      const fp = path.join(dir, file);
+    for (const entry of fs.readdirSync(dir)) {
+      const fp   = path.join(dir, entry);
+      const stat = fs.statSync(fp);
       try {
-        const { mtimeMs } = fs.statSync(fp);
-        if (now - mtimeMs > SCRATCH_MAX_AGE_MS) {
-          fs.unlinkSync(fp);
+        if (now - stat.mtimeMs > SCRATCH_MAX_AGE_MS) {
+          if (stat.isDirectory()) {
+            fs.rmSync(fp, { recursive: true, force: true });
+          } else {
+            fs.unlinkSync(fp);
+          }
           removed++;
         }
-      } catch (_) { /* skip locked or already-gone files */ }
+      } catch (_) { /* skip locked or already-gone entries */ }
     }
   }
   if (removed > 0) {
-    console.log(`[cleanup] Removed ${removed} scratch file(s) older than 24 h.`);
+    console.log(`[cleanup] Removed ${removed} scratch file(s)/dir(s) older than 24 h.`);
   }
 }
 

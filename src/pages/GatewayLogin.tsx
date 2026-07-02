@@ -9,13 +9,12 @@ export default function GatewayLogin() {
   const [oidcLoading, setOidcLoading] = useState(false)
   const [error, setError]       = useState('')
   const [oidcConfigured, setOidcConfigured] = useState(false)
-  // When true, the "waiting for popup" overlay is shown
   const [oidcWaiting, setOidcWaiting] = useState(false)
 
   const { login, oidcLogin } = useAuth()
-  const navigate  = useNavigate()
+  const navigate = useNavigate()
 
-  // Tear down message listener if the component unmounts mid-flow
+  // Cleanup ref — tears down the message listener + closed-poller on unmount
   const oidcCleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => () => { oidcCleanupRef.current?.() }, [])
 
@@ -65,43 +64,55 @@ export default function GatewayLogin() {
     }
   }
 
-  function cancelOidcWaiting() {
-    oidcCleanupRef.current?.()
-    setOidcWaiting(false)
-    setOidcLoading(false)
-  }
+  // ── IDSP / OIDC popup flow ────────────────────────────────────────────────
+  //
+  // The popup is opened synchronously (about:blank) inside the click handler
+  // so the browser never classifies it as a scripted popup and blocks it.
+  // Once oidc-init returns the real authorization URL we navigate the already-
+  // open window to it.  If the popup is blocked we fall back to a full-page
+  // redirect — the server-side oidcPendingStore (keyed by state) means both
+  // paths work without relying on session-cookie visibility.
 
   async function handleIdspLogin() {
     setOidcLoading(true)
     setError('')
+
+    // Open synchronously in the click handler to avoid popup blockers.
+    // toolbar/menubar/location/status=no strips the browser chrome so the
+    // IDSP sign-in page feels like an in-app modal rather than a new tab.
+    const pw = 520, ph = 680
+    const pl = Math.round(window.screenX + (window.outerWidth  - pw) / 2)
+    const pt = Math.round(window.screenY + (window.outerHeight - ph) / 2)
+    const popup = window.open(
+      'about:blank',
+      'idsp_login',
+      `width=${pw},height=${ph},left=${pl},top=${pt},` +
+      `resizable=yes,scrollbars=yes,` +
+      `toolbar=no,menubar=no,location=no,status=no`
+    )
+
     try {
       const r = await fetch('/api/auth/oidc-init')
       const d = await r.json()
+
       if (!d.success || !d.authUrl) {
+        popup?.close()
         setError(d.error || 'Failed to initiate IDSP login. Check Auth Setup configuration.')
         setOidcLoading(false)
         return
       }
 
-      // Open the OIDC flow in a small popup (IDPs block iframe embedding).
-      // Show a waiting overlay on this page so the user never navigates away.
-      const pw = 520, ph = 660
-      const pl = Math.round(window.screenX + (window.outerWidth  - pw) / 2)
-      const pt = Math.round(window.screenY + (window.outerHeight - ph) / 2)
-      const popup = window.open(
-        d.authUrl,
-        'idsp_login',
-        `width=${pw},height=${ph},left=${pl},top=${pt},resizable=yes,scrollbars=yes`
-      )
-
-      if (!popup) {
-        // Popup blocked — fall back to full-page redirect
+      if (!popup || popup.closed) {
+        // Popup was blocked — fall back to full-page redirect.
+        // oidcPendingStore on the server means this path always works too.
         window.location.href = d.authUrl
         return
       }
 
-      // Show "waiting for popup to complete" overlay on this page
+      // Navigate the pre-opened blank popup to the real IDSP URL
+      popup.location.href = d.authUrl
       setOidcWaiting(true)
+      setOidcLoading(false)
 
       function onMessage(evt: MessageEvent) {
         if (evt.origin !== window.location.origin) return
@@ -118,7 +129,7 @@ export default function GatewayLogin() {
         }
       }
 
-      // Detect user closing the popup without finishing
+      // Poll for user closing the popup without finishing
       const pollId = setInterval(() => {
         if (popup.closed) { cleanup(); setOidcWaiting(false); setOidcLoading(false) }
       }, 600)
@@ -133,10 +144,19 @@ export default function GatewayLogin() {
       window.addEventListener('message', onMessage)
 
     } catch (e) {
+      popup?.close()
       setError(`Network error: ${String(e)}`)
       setOidcLoading(false)
     }
   }
+
+  function cancelOidcWaiting() {
+    oidcCleanupRef.current?.()
+    setOidcWaiting(false)
+    setOidcLoading(false)
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div style={{
@@ -219,9 +239,7 @@ export default function GatewayLogin() {
                 disabled={loading}
                 style={{ flex: 2, padding: '10px', borderRadius: '7px', cursor: loading ? 'wait' : 'pointer', fontSize: '14px', fontWeight: 700, background: loading ? 'rgba(204,0,0,0.5)' : 'var(--color-accent-red)', border: 'none', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
               >
-                {loading
-                  ? <><Spinner />Signing in…</>
-                  : 'Login →'}
+                {loading ? <><Spinner />Signing in…</> : 'Login →'}
               </button>
             </div>
           </form>
@@ -248,7 +266,7 @@ export default function GatewayLogin() {
                 }}
               >
                 {oidcLoading
-                  ? <><Spinner dark />Redirecting to IDSP…</>
+                  ? <><Spinner dark />Opening IDSP…</>
                   : <>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
@@ -280,7 +298,7 @@ export default function GatewayLogin() {
         </div>
       </div>
 
-      {/* ── IDSP waiting overlay — shown while the OIDC popup is open ─────────── */}
+      {/* ── IDSP waiting overlay ───────────────────────────────────────────────── */}
       {oidcWaiting && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 1000,
@@ -326,7 +344,6 @@ export default function GatewayLogin() {
 
             {/* Body */}
             <div style={{ padding: '36px 28px 32px' }}>
-              {/* Spinner */}
               <div style={{
                 width: '52px', height: '52px', margin: '0 auto 22px',
                 border: '3px solid rgba(255,255,255,0.1)',

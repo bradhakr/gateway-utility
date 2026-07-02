@@ -43,7 +43,8 @@ while (i < process.argv.length) {
 
 // Configuration
 const generatedDir = path.join(__dirname, 'generated');
-const graphmanPath = path.join(graphmanHome, 'graphman.sh');
+const graphmanExe = process.platform === 'win32' ? 'graphman.bat' : 'graphman.sh';
+const graphmanPath = path.join(graphmanHome, graphmanExe);
 
 // Check if generated directory exists
 if (!fs.existsSync(generatedDir)) {

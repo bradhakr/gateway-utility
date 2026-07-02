@@ -55,6 +55,13 @@ const TOOLS = [
     color: '#6d28d9',
     desc: 'Upload or paste any valid Graphman JSON bundle and import it to a configured gateway. Validate the payload — entity types and item counts listed automatically — then push in one step.',
   },
+  {
+    path: '/repo-syncup',
+    label: 'Repository SyncUp',
+    subtitle: 'Gateway ↔ Git Sync',
+    color: '#16a34a',
+    desc: 'Bi-directional sync between API Gateway configurations and GitHub repositories. Export and explode gateway entities to a repo, or pull and import repo files back to a gateway — with full entity-level selection control.',
+  },
 ]
 
 const CONFIG = [
@@ -78,6 +85,13 @@ const CONFIG = [
     subtitle: 'Login & OIDC Settings',
     color: '#b45309',
     desc: 'Configure gateway login endpoints and OIDC settings. Set discovery URL, client ID, scopes, and redirect URIs. Also reachable before login to fix auth misconfigurations.',
+  },
+  {
+    path: '/github-config',
+    label: 'GitHub Config',
+    subtitle: 'Repositories & PAT Tokens',
+    color: '#16a34a',
+    desc: 'Add, edit, or remove GitHub repository entries used by Repository SyncUp. Configure owner, repo name, default branch, and Personal Access Token (PAT) for each target repository.',
   },
 ]
 
@@ -109,6 +123,10 @@ function ToolIcon({ path, size = 17 }: { path: string; size?: number }) {
       return <svg viewBox="0 0 24 24" {...s}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
     case '/new-entity':
       return <svg viewBox="0 0 24 24" {...s}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+    case '/repo-syncup':
+      return <svg viewBox="0 0 24 24" {...s}><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/></svg>
+    case '/github-config':
+      return <svg viewBox="0 0 24 24" {...s}><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
     case '/configuration':
       return <svg viewBox="0 0 24 24" {...s}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     case '/graphman-config':

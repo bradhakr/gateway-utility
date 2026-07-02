@@ -188,6 +188,19 @@ const toolItems: NavItem[] = [
       </svg>
     ),
   },
+  {
+    path: '/repo-syncup',
+    label: 'Repository SyncUp',
+    description: 'Gateway ↔ Git sync',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="16 3 21 3 21 8"/>
+        <line x1="4" y1="20" x2="21" y2="3"/>
+        <polyline points="21 16 21 21 16 21"/>
+        <line x1="15" y1="15" x2="21" y2="21"/>
+      </svg>
+    ),
+  },
 ]
 
 const configItems: NavItem[] = [
@@ -222,6 +235,19 @@ const configItems: NavItem[] = [
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
         <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+    ),
+  },
+  {
+    path: '/github-config',
+    label: 'GitHub Config',
+    description: 'Repositories & PAT tokens',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="18" cy="18" r="3"/>
+        <circle cx="6" cy="6" r="3"/>
+        <path d="M13 6h3a2 2 0 0 1 2 2v7"/>
+        <line x1="6" y1="9" x2="6" y2="21"/>
       </svg>
     ),
   },

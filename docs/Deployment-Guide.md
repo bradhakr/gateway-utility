@@ -52,12 +52,13 @@ Each environment is fully isolated — separate namespace, ConfigMap, Secrets, e
 
 ```
 k8s/
-├── configmap.yaml                         ← edit per environment before applying
-├── deployment.yaml                        ← set namespace per environment
-├── service.yaml                           ← set namespace per environment
-├── secret.yaml.template                   ← graphman.configuration credentials template
-├── session-secret.yaml                    ← OIDC session signing key (placeholder)
-├── docker-registry-secret.yaml.template   ← Docker Hub pull secret template
+├── configmap.yaml                              ← edit per environment before applying
+├── deployment.yaml                             ← set namespace per environment
+├── service.yaml                                ← set namespace per environment
+├── secret.yaml.template                        ← graphman.configuration credentials template
+├── github-repos-secret.yaml.template           ← GitHub repos config template (optional — Repository SyncUp)
+├── session-secret.yaml                         ← OIDC session signing key (placeholder)
+├── docker-registry-secret.yaml.template        ← Docker Hub pull secret template
 └── envoy-gateway/
     ├── shared-gateway-listener-patch.yaml ← manual listener YAML (see Step 9 note)
     ├── gu-dev-namespace.yaml
@@ -375,6 +376,44 @@ kubectl create secret generic gateway-utility-session \
 
 > Use different session keys in each environment. The key is used to sign cookies — if it changes all existing sessions are invalidated.
 
+**GitHub repository configuration** (optional — required only when using Repository SyncUp):
+
+The `github-repos.json` file holds the GitHub repository entries (owner, repo name, branch, Personal Access Token) used by the Repository SyncUp tool. The pod starts and runs normally without this secret — Repository SyncUp simply shows "no repositories configured".
+
+```bash
+# Option A — from a filled-in github-repos.json file
+kubectl create secret generic gateway-utility-github-repos \
+  --namespace gu-dev \
+  --from-file=github-repos.json=/path/to/dev-github-repos.json \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic gateway-utility-github-repos \
+  --namespace gu-prod \
+  --from-file=github-repos.json=/path/to/prod-github-repos.json \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+```bash
+# Option B — from the filled-in template
+cp k8s/github-repos-secret.yaml.template k8s/github-repos-secret.yaml
+# Edit k8s/github-repos-secret.yaml — fill in owner, repo, branch, PAT
+kubectl apply -f k8s/github-repos-secret.yaml -n gu-dev
+kubectl apply -f k8s/github-repos-secret.yaml -n gu-prod
+```
+
+After creating or updating the secret, restart the pod to pick it up:
+
+```bash
+kubectl rollout restart deployment/gateway-utility -n gu-dev
+kubectl rollout restart deployment/gateway-utility -n gu-prod
+```
+
+> **Important:** In a Kubernetes deployment the secret is mounted **read-only** at `/app/github-repos.json`. The **GitHub Config** page (`/github-config`) will return an error if you try to save changes through the browser while running in-cluster. Manage repository entries by updating the secret via `kubectl` and restarting the pod — exactly the same workflow as `graphman.configuration`.
+
+> **PAT scope required:** Classic PAT — `repo` scope. Fine-grained PAT — **Repository permissions → Contents: Read and write**.
+
+> Never commit `github-repos-secret.yaml` — it contains real PATs and is already in `.gitignore`.
+
 ---
 
 ### Step 12 — Deploy the application
@@ -489,8 +528,10 @@ kubectl rollout status deployment/gateway-utility -n gu-prod
 >   -v $(pwd)/config.json:/app/config.json:ro \
 >   -v $(pwd)/auth-config.json:/app/auth-config.json:ro \
 >   -v $(pwd)/../../graphman-client-main/graphman.configuration:/app/graphman-client/graphman.configuration:ro \
+>   -v $(pwd)/github-repos.json:/app/github-repos.json:ro \
 >   gateway-utility:latest
 > # Then open http://localhost:3002
+> # The -v github-repos.json line is optional — omit it if you don't use Repository SyncUp
 > ```
 
 ---
